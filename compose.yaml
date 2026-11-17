@@ -5,6 +5,14 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://restaurant:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/restaurant
       QDRANT_URL: http://qdrant:6333
+      GOOGLE_CREDENTIALS_PATH: /run/secrets/restaurant-ai-agent-dev-bca3ed05c181.json
+      THREAD_ID_HMAC_SECRET: ${THREAD_ID_HMAC_SECRET:-}
+      THREAD_ID_HMAC_KEY_ID: ${THREAD_ID_HMAC_KEY_ID:-v1}
+    volumes:
+      - type: bind
+        source: ${GOOGLE_CREDENTIALS_PATH:-/dev/null}
+        target: /run/secrets/restaurant-ai-agent-dev-bca3ed05c181.json
+        read_only: true
     ports:
       - "${APP_PORT:-8000}:8000"
     depends_on:

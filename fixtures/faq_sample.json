@@ -1,0 +1,26 @@
+[
+  {
+    "id": "hours-weekdays",
+    "category": "hours",
+    "question": "До скольки ресторан работает по будням?",
+    "answer": "По будням ресторан открыт до 22:00.",
+    "updated_at": "2026-11-17T00:00:00Z",
+    "active": true
+  },
+  {
+    "id": "delivery-area",
+    "category": "delivery",
+    "question": "В какие районы вы доставляете?",
+    "answer": "Актуальную зону доставки уточните у оператора ресторана.",
+    "updated_at": "2026-11-17T00:00:00Z",
+    "active": true
+  },
+  {
+    "id": "inactive-example",
+    "category": "example",
+    "question": "Неактивная запись",
+    "answer": "Эта запись не должна индексироваться.",
+    "updated_at": "2026-11-17T00:00:00Z",
+    "active": false
+  }
+]
