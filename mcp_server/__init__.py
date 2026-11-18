@@ -1,1 +1,1 @@
-"""Future MCP server package; intentionally not started in M1."""
+"""Read-only restaurant menu MCP server package."""

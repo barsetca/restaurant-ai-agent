@@ -5,7 +5,7 @@
 ## Таблицы
 | Таблица | Основные поля | Ограничения / назначение |
 |---|---|---|
-| `menu_items` | `id`, `source_row_id`, `name`, `description`, `ingredients`, `allergens`, `category`, `price_minor`, `currency`, `available` | Уникальный `source_row_id`, `price_minor >= 0`; доступность |
+| `menu_items` | `id`, `source_row_id`, `name`, `description`, `ingredients`, `allergens`, `dietary_tags`, `category`, `price_minor`, `currency`, `available` | Уникальный `source_row_id`, `price_minor >= 0`; явные dietary tags и доступность |
 | `restaurant_settings` | `key`, `value`, `updated_at` | `key` PK; проверка типов на уровне sync service |
 | `orders` | `id`, `telegram_user_id`, `customer_name`, `phone`, `address`, `requested_at`, `subtotal_minor`, `delivery_fee_minor`, `total_minor`, `currency`, `status`, `confirmation_key`, `calendar_event_id` | Уникальный `confirmation_key`; снимок суммы |
 | `order_items` | `id`, `order_id`, `menu_item_id`, `quantity`, `unit_price_minor`, `line_total_minor`, `name_snapshot` | FK на заказ/блюдо, `quantity > 0`; снимок цены и названия |
@@ -21,13 +21,17 @@
 EUR; integer minor units. Сумма позиций, доставка и общий итог вычисляются сервером. При изменении цен/доставки до подтверждения нужен новый показ итоговой суммы и новое подтверждение. После подтверждения snapshots не переписываются. `confirmation_key` обеспечивает идемпотентность заказа; для Calendar нужна отдельная защита от дублей.
 
 ## Источники и синхронизация
-- Google Sheets `Menu`: id, название, описание, ингредиенты, аллергены, категория, цена, доступность. Валидировать вход, не допускать частичного применения ошибочного набора.
+- Google Sheets `Menu`: id, название, описание, ингредиенты, аллергены, dietary tags, категория, цена, доступность. Реализация sync dietary tags остается M7; валидировать вход, не допускать частичного применения ошибочного набора.
 - Google Sheets `Settings`: ключи, значения, описания. `delivery_fee_minor` — редактируемая настройка, не константа.
 - Google Sheets `FAQ`: id, category, question, answer, updated_at, active; Qdrant хранит embeddings, `content_hash` и metadata. Таблица `faq_sync` зарезервирована для будущего audit/job metadata и в M2 не используется как второй источник текущего sync state (ADR-009).
 - Не удалять блюда, уже упомянутые в заказах, при удалении строки Sheets; использовать безопасную деактивацию.
 
 ## Миграции и тесты
 Alembic; миграции запускаются отдельной командой; проверять clean database и повторный upgrade. Тесты — на отдельной БД, без реальных контактов. Не выполнять destructive операции на рабочей БД.
+
+## Development menu seed
+
+`python -m scripts.seed_menu` — явная DEV-only operator command, не migration и не startup hook. Набор владеет только 15 парами stable UUID5 / `source_row_id` с namespace `dev-menu-*`. Перед upsert команда под transaction advisory lock проверяет отсутствие конфликтующих UUID/source pairs; конфликт откатывает всю transaction. Повторный запуск обновляет только эти пары до declarative seed state, не создаёт дубликаты, не удаляет другие menu rows и не выводит DSN/credentials. Working development DB `restaurant` содержит этот набор; production data mechanism и Google Sheets Menu sync остаются M7.
 
 ## LangGraph checkpoint schema — M3.2
 
@@ -46,6 +50,12 @@ Psycopg соединения saver используют `autocommit=True`, `prep
 Начальная миграция `alembic/versions/0001_initial_schema.py` создает все восемь таблиц, PK/FK, уникальный `confirmation_key`, индексы и базовые CHECK-ограничения. `orders.delivery_fee_minor` имеет `NOT NULL` и CHECK `>= 0`. Миграция выполняется только отдельной командой, не при startup приложения.
 
 `ingredients` и `allergens` реализованы как PostgreSQL `TEXT[] NOT NULL`. Для M1 это нормализует список строк без неограниченной JSON-структуры, сохраняет порядок исходных значений и допускает штатные PostgreSQL array-операторы/индексы позднее. Отдельные справочники и связи many-to-many для текущего одноресторанного MVP избыточны; формат элементов и нормализация входа остаются ответственностью будущего sync service.
+
+## Реализация M4
+
+Миграция `0002_add_menu_item_dietary_tags.py` отдельно от M1 добавляет `menu_items.dietary_tags TEXT[] NOT NULL DEFAULT '{}'`. Существующие блюда получают пустой массив, который означает только отсутствие подтвержденных тегов, а не доказательство dietary suitability. Теги не выводятся автоматически из ingredients/allergens; будущий M7 sync должен принимать явные нормализованные значения источника.
+
+MCP repository использует существующий SQLAlchemy model и для каждого tool call открывает транзакцию с `SET TRANSACTION READ ONLY`. `calculate_cart` читает актуальные rows одним запросом и вычисляет line totals/subtotal в Python integer minor units; таблицы cart/order не изменяются.
 
 ## Нерешенные вопросы
 Представление `restaurant_settings.value`, жизненный цикл статусов заказа и Calendar, а также retention/pruning checkpoint history. Решать в соответствующем milestone и отражать в `DECISIONS.md`.

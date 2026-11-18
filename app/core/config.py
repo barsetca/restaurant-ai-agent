@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     faq_retrieval_score_threshold: float = Field(default=0.30, ge=0.0, le=1.0)
     faq_request_timeout_seconds: float = Field(default=15.0, gt=0.0, le=120.0)
     faq_max_context_characters: int = Field(default=6000, ge=500, le=20000)
+    mcp_startup_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
+    mcp_tool_timeout_seconds: float = Field(default=15.0, gt=0.0, le=120.0)
+    mcp_shutdown_timeout_seconds: float = Field(default=5.0, gt=0.0, le=30.0)
 
     @model_validator(mode="after")
     def validate_enabled_integrations(self) -> "Settings":

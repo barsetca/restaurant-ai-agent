@@ -1,6 +1,6 @@
 # Development Status — Restaurant AI Agent
 
-**Дата:** 2026-11-18. **Текущий milestone:** M3.2 — PostgreSQL Checkpoint. **Состояние:** M3.1 READY, M3.2 READY; implementation и automated/live проверки PASS, постоянный local HMAC secret настроен владельцем, manual Telegram E2E PASS по подтверждению владельца. Общий M3 остаётся IN PROGRESS.
+**Дата:** 2026-11-18. **Текущий milestone:** M4 — MCP Tools. **Состояние:** M4 READY; implementation, protocol, isolated PostgreSQL, real stdio, Docker и M1–M3.2 regression проверки PASS. Migration `0002` применена к основной development-БД; явный идемпотентный DEV seed добавил 15 synthetic menu items и прошёл MCP smoke. M3.1/M3.2 остаются READY; M5 NOT STARTED.
 
 ## Этапы
 
@@ -9,7 +9,7 @@
 | M1 / дни 1–2 | Каркас, FastAPI, PostgreSQL, Alembic, Docker, Telegram bootstrap | DONE / READY | Compose, health, migrations/schema PASS |
 | M2 / день 3 | Sheets FAQ → OpenAI embeddings → Qdrant, grounded answer/fallback | DONE / READY | Live Sheets/OpenAI/Qdrant, Telegram E2E и secure logging PASS |
 | M3 / день 4 | LangGraph state, routing, checkpoint | IN PROGRESS / M3.1 READY / M3.2 READY | Official PostgreSQL persistence/restart PASS; manual Telegram E2E M3.2 owner-confirmed PASS |
-| M4 / день 5 | MCP server/client, меню, расчет | NOT STARTED | — |
+| M4 / день 5 | MCP server/client, меню, расчет | DONE / READY | Unit/protocol/PostgreSQL/real stdio/Docker PASS |
 | M5 / день 6 | Корзина, сбор данных, подтверждение | NOT STARTED | — |
 | M6 / день 7 | Сохранение заказа, Calendar, идемпотентность | NOT STARTED | — |
 | M7 / день 8 | Admin, Sheets Menu/Settings sync, логи, оператор | NOT STARTED | — |
@@ -179,3 +179,58 @@
 - Multi-instance distributed locking и checkpoint retention/pruning остаются отдельными будущими решениями.
 - PERF-001 остаётся OPEN до инструментального измерения; причина slow first FAQ response неизвестна.
 - Общий M3 остаётся IN PROGRESS. Следующий этап — M4 MCP Tools, NOT STARTED; не начинать автоматически. Commit/push не выполнялись.
+
+## M4 MCP Tools — analysis checkpoint
+
+**Статус:** ANALYSIS COMPLETE / IMPLEMENTATION NOT STARTED. После M3.2 владелец выполнил `git add .`, commit и push; на момент анализа `main` чиста и синхронизирована с `origin/main` на commit `b087c31`.
+
+- Python MCP SDK пока отсутствует в `pyproject.toml`/`uv.lock`; `mcp_server` содержит только placeholder.
+- Существующая модель `MenuItem` уже задаёт UUID `id`, `ingredients`, `allergens`, `category`, integer `price_minor`, `currency` и `available`; для базовых read-only menu tools новая схема не нужна.
+- Требуемый фильтр `dietary_tags` не имеет согласованного источника или DB-поля. Нельзя безопасно выводить диетические свойства из отсутствия аллергенов. До реализации требуется решение владельца: добавить явное `dietary_tags TEXT[]` и будущую колонку Sheets Menu либо сузить контракт M4.
+- Рекомендуемая реализация: официальный Python MCP SDK v2, отдельный stdio server, backend client adapter с ограниченным environment, typed structured outputs, transaction-level read-only PostgreSQL access, bounded inputs/cart и безопасные tool errors.
+- Рабочие данные ресторана не исследовались и не изменялись. Integration acceptance должен использовать отдельную PostgreSQL database с `test` в имени и синтетические menu rows.
+- Tests, migrations, dependency resolution, Docker/live checks и M3.2 regression в analysis checkpoint не запускались; это задачи implementation/acceptance после подтверждения владельца.
+
+## M4 MCP Tools — implementation
+
+- Добавлен `mcp==2.0.0`; frozen lock содержит 103 packages.
+- `mcp_server` — отдельный stdio process на official Python MCP SDK v2; backend adapter использует explicit `stdio_client`, restricted child environment, typed structured results и startup/tool/shutdown timeouts.
+- `search_menu` ищет только available dishes, поддерживает category/all dietary tags, экранирует LIKE wildcards, стабильно сортирует и возвращает не более 20 rows.
+- `get_dish` возвращает явные ingredients/allergens/dietary tags, integer price, currency и текущую availability.
+- `calculate_cart` агрегирует duplicate dish IDs, одним запросом проверяет rows, целиком отклоняет missing/unavailable/non-EUR cart и возвращает только deterministic EUR subtotal без delivery.
+- Bounds: 10 dietary tags, 20 distinct cart lines, quantity 1–20 после aggregation, максимум 100 units. Tool errors и unexpected failures не раскрывают DSN/DB details.
+- Migration `0002` добавляет `dietary_tags TEXT[] NOT NULL DEFAULT '{}'`; M1 migration не изменена. Tags не выводятся из ingredients/allergens; Sheets sync остается M7.
+- Все repository calls выполняются в PostgreSQL transaction `READ ONLY`. MCP не подключён к LangGraph и не создаёт cart/order/Calendar side effects.
+
+## M4 проверки
+
+| Проверка | Результат |
+|---|---|
+| Targeted M4 unit/protocol/client/contracts | PASS: 24 tests до final additions |
+| Full offline final | PASS: 100 passed, 7 external skips |
+| Real stdio + PostgreSQL | PASS: tools/list + 3 calls, filter, duplicate aggregation, safe unavailable error, process exit, row count unchanged |
+| Alembic `0001 → 0002` + repeated upgrade + schema/ORM compare | PASS: 2 integration tests |
+| M3.2 checkpoint + Qdrant integrations | PASS: 4 tests |
+| Docker frozen build/recreate | PASS: `mcp==2.0.0`, backend polling startup healthy |
+| Health | PASS: backend live/ready and Qdrant HTTP 200 |
+| Live FAQ regression | PASS: answer contains `12:30` |
+| Secure backend log scan | PASS: exact=0, generic=0, traceback=0 |
+| Lock/compile/diff | PASS |
+
+Промежуточные диагностические FAIL: first real stdio run выявил, что `mcp==2.0.0` требует explicit `stdio_client(parameters)` вместо shorthand из newer docs; adapter исправлен, повтор PASS. Первый checkpoint/Qdrant container run потерял project `asyncio_mode=auto` из-за частичного read-only mount; повтор с явной pytest option PASS. Две однострочные diagnostic Python команды имели syntax/quoting errors и были исправлены; implementation на них не зависела.
+
+## M4 ограничения и следующий шаг
+
+- M4 **READY**. После acceptance владелец отдельно разрешил штатный upgrade основной development-БД `restaurant`: `alembic upgrade head` успешно перевёл revision `0001 → 0002`. Поле `menu_items.dietary_tags` подтверждено как `TEXT[] NOT NULL DEFAULT '{}'`; список из 13 таблиц и row counts до/после совпали, PostgreSQL и backend health PASS. Рабочие menu rows не добавлялись и не изменялись (таблица `menu_items` была пуста).
+- Runtime Menu может быть пустым до M7 Sheets Menu sync; M4 tools корректно возвращают empty search/missing dish.
+- Adapter намеренно не подключен к order placeholder. Следующий этап — M5 cart/confirmation, только по отдельному заданию.
+- Manual Telegram chat E2E в M4 не повторялся; existing polling startup, health, live FAQ и automated graph regressions PASS.
+
+## DEV Menu Seed — подготовка к M5
+
+- Добавлена явная команда `python -m scripts.seed_menu`; она не запускается при startup и не меняет schema. Стабильные UUID5 и `dev-menu-001`…`dev-menu-015` определяют только принадлежащие seed строки; ownership conflict прерывает atomic transaction без изменений.
+- Основная development-БД `restaurant` проверена до записи: PostgreSQL accepting connections, Alembic `0002 (head)`, `menu_items=0`. Первый запуск: `created=15`, `updated=0`, `total=15`; повторный и финальный reconcile: `created=0`, `updated=15`, `total=15`.
+- Распределение: Закуски 3, Салаты 3, Основные блюда 5, Десерты 2, Напитки 2. В наборе 1 unavailable item, 13 items с allergens, 9 items с explicit dietary tags (`vegan`, `vegetarian`, `alcohol_free`). Invalid/duplicate/empty-required checks: 0.
+- MCP adapter smoke PASS: tool list; search by name/category/dietary tag; available/unavailable `get_dish`; multi-item subtotal `2450`; duplicate aggregation quantity `3`, subtotal `2250`; unavailable cart rejected.
+- Targeted seed tests PASS: 3. Full offline regression PASS: 103 passed, 7 external skips. Compile, Docker build/config, frozen lock, `git diff --check`, PostgreSQL/backend live/ready PASS.
+- M4 остаётся **READY**, M5 **NOT STARTED**. Google Sheets Menu sync, persistent cart/orders и LangGraph wiring не реализовывались.

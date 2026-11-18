@@ -2,9 +2,9 @@
 
 ## Overview
 
-This repository contains the infrastructure, FAQ knowledge-base/RAG, deterministic LangGraph routing, and PostgreSQL-backed conversation checkpoints for a single synthetic restaurant. FAQ data is read from Google Sheets, embedded through OpenAI, indexed in Qdrant, and converted into a grounded Russian answer. When evidence is missing, conflicting, or an external dependency fails, the assistant returns a fixed safe fallback.
+This repository contains the infrastructure, FAQ knowledge-base/RAG, deterministic LangGraph routing, PostgreSQL-backed conversation checkpoints, and read-only MCP menu tools for a single synthetic restaurant. FAQ data is read from Google Sheets, embedded through OpenAI, indexed in Qdrant, and converted into a grounded Russian answer. When evidence is missing, conflicting, or an external dependency fails, the assistant returns a fixed safe fallback.
 
-MCP, menu/order business flows, Google Calendar, admin UI, and operator handoff are not implemented yet.
+Persistent carts, order creation, Google Calendar, Menu/Settings sync, admin UI, and operator handoff are not implemented yet.
 
 ## Architecture
 
@@ -15,6 +15,8 @@ MCP, menu/order business flows, Google Calendar, admin UI, and operator handoff 
 - `app/rag/answer_service.py` asks OpenAI for a structured support/conflict decision and only returns a grounded answer.
 - `app/bot` reuses one `python-telegram-bot` polling application and derives versioned HMAC thread IDs without storing raw chat IDs in graph state.
 - `app/agent` compiles one deterministic LangGraph with an official async PostgreSQL checkpointer; same-thread messages are serialized while different threads remain concurrent.
+- `app/menu` performs bounded menu search and deterministic integer-minor-unit cart calculation in transaction-level read-only PostgreSQL sessions.
+- `mcp_server` exposes `search_menu`, `get_dish`, and `calculate_cart` over stdio; `app/mcp` is the typed backend client adapter.
 - PostgreSQL remains the application database; M2 does not use it as a second FAQ index-state store.
 
 See `docs/ARCHITECTURE.md`, `docs/DATABASE_ARCHITECTURE.md`, and `docs/DECISIONS.md`.
@@ -28,6 +30,7 @@ See `docs/ARCHITECTURE.md`, `docs/DATABASE_ARCHITECTURE.md`, and `docs/DECISIONS
 - Qdrant and `qdrant-client`
 - `gspread` with a Google service account
 - `python-telegram-bot` long polling
+- Python MCP SDK v2 with local stdio transport
 - pytest, HTTPX, Docker Compose
 
 All direct Python dependencies are pinned in `pyproject.toml` and resolved in `uv.lock`.
@@ -71,6 +74,9 @@ FAQ_RETRIEVAL_TOP_K
 FAQ_RETRIEVAL_SCORE_THRESHOLD
 FAQ_REQUEST_TIMEOUT_SECONDS
 FAQ_MAX_CONTEXT_CHARACTERS
+MCP_STARTUP_TIMEOUT_SECONDS
+MCP_TOOL_TIMEOUT_SECONDS
+MCP_SHUTDOWN_TIMEOUT_SECONDS
 ```
 
 To use Google Sheets, create a service account, enable Google Sheets API access, share the spreadsheet with the service-account email as Viewer, and set `GOOGLE_CREDENTIALS_PATH` to the local JSON file. The adapter requests the read-only Sheets scope. The spreadsheet must contain a worksheet named `FAQ` with these headers:
@@ -99,7 +105,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-This starts `backend`, `postgres`, and `qdrant` with persistent volumes. The credentials file is bind-mounted read-only into the backend when `GOOGLE_CREDENTIALS_PATH` points to a host file; it is not copied into the image. MCP is not started.
+This starts `backend`, `postgres`, and `qdrant` with persistent volumes. The credentials file is bind-mounted read-only into the backend when `GOOGLE_CREDENTIALS_PATH` points to a host file; it is not copied into the image. The MCP server is a local stdio subprocess started on demand by `MenuMcpClient`; it is not a separate Compose service and is not wired into the M3.2 order placeholder.
 
 ```bash
 docker compose config
@@ -156,6 +162,35 @@ docker compose run --rm --no-deps backend \
 
 The command is repeatable and protected by a PostgreSQL advisory lock. It creates/updates `checkpoint_migrations`, `checkpoints`, `checkpoint_blobs`, and `checkpoint_writes`. It is deliberately separate from application Alembic migrations and is never executed automatically at backend startup.
 
+Migration `0002` adds explicit `menu_items.dietary_tags TEXT[] NOT NULL DEFAULT '{}'`. Apply it through the normal explicit Alembic command before using M4 tools against a database. Dietary tags are source data; they are never inferred from ingredients or allergens. The matching Google Sheets Menu column and synchronization remain M7 work.
+
+## Development menu seed
+
+After applying migration `0002`, populate a development database with the 15-item synthetic European menu using an explicit command:
+
+```bash
+uv run python -m scripts.seed_menu
+docker compose exec backend /app/.venv/bin/python -m scripts.seed_menu
+```
+
+The command is idempotent: stable UUIDs and `dev-menu-*` source IDs identify only its own rows. A repeated run restores those rows to the declared seed values without creating duplicates or changing other menu records. It performs no schema migration, does not run at backend startup, and never deletes arbitrary data. Review `DATABASE_URL` before running it; the command writes to the configured database and prints only safe JSON counters.
+
+## MCP menu tools
+
+The server can be launched by an MCP host over stdio:
+
+```bash
+uv run python -m mcp_server
+```
+
+The backend-facing `MenuMcpClient` launches that fixed module command with a restricted child environment and validates structured results. All tools read PostgreSQL in read-only transactions:
+
+- `search_menu(query, category?, dietary_tags?)` returns at most 20 available dishes;
+- `get_dish(dish_id)` returns current details, price, dietary data, and availability;
+- `calculate_cart(items)` aggregates duplicate IDs and returns an EUR `subtotal_minor` without delivery.
+
+Inputs are bounded to 20 cart lines, quantity 1–20 per dish after aggregation, and 100 total units. Missing/unavailable dishes, unsupported currencies, or any invalid item reject the complete calculation. M4 creates no cart/order rows and performs no Calendar action.
+
 ## Tests
 
 Unit tests use synthetic fixtures and mocks and need no real Google/OpenAI/Telegram credentials:
@@ -184,12 +219,19 @@ TEST_CHECKPOINT_DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/r
   uv run pytest tests/integration/test_agent_checkpoint_postgres.py
 ```
 
+MCP stdio integration tests require a separately migrated PostgreSQL database whose name contains `test`. They insert and remove only unique synthetic menu rows:
+
+```bash
+TEST_MCP_DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/restaurant_mcp_test \
+  uv run pytest tests/integration/test_mcp_stdio_postgres.py
+```
+
 Live Google Sheets/OpenAI/Qdrant verification has passed on synthetic FAQ data, including update and deactivation without restart. Telegram `/start` and FAQ chat flows have also been verified. HTTP diagnostics remain enabled, with centralized redaction of tokens, API keys, authorization headers, URL passwords, and exception tracebacks.
 
 ## Current status
 
-M2, M3.1, and M3.2 are READY. M3.2 automated/live verification passed, including state recovery after a backend restart; the owner then configured a stable local `THREAD_ID_HMAC_SECRET` and confirmed `/start`, FAQ, order placeholder, and unknown fallback in Telegram. Codex did not repeat the owner's manual chat checks. PERF-001 remains open: the owner observes a roughly 5–10 second first FAQ response with faster subsequent responses, but the cause has not been measured. See `docs/DEVELOPMENT_STATUS.md` for exact results.
+M2, M3.1, M3.2, and M4 are READY. M4 protocol/PostgreSQL/real-stdio tests pass without modifying working restaurant data, and M3.2 checkpoint/Qdrant/Docker/live FAQ regressions remain green. The owner previously confirmed `/start`, FAQ, order placeholder, and unknown fallback in Telegram. PERF-001 remains open: the owner observes a roughly 5–10 second first FAQ response with faster subsequent responses, but the cause has not been measured. See `docs/DEVELOPMENT_STATUS.md` for exact results.
 
 ## Next milestones
 
-The next milestone is M4 MCP Tools and is NOT STARTED. Do not start it automatically. Full LLM conversation history, checkpoint retention, distributed multi-instance coordination, orders, Calendar, admin sync, evaluation, and PERF-001 instrumentation remain future work.
+The next milestone is M5 cart and confirmation flow. Do not start it automatically. MCP is intentionally not connected to the LangGraph order placeholder yet. Full LLM conversation history, checkpoint retention, distributed multi-instance coordination, orders, Calendar, admin sync, evaluation, and PERF-001 instrumentation remain future work.

@@ -2,7 +2,7 @@
 
 ## Что это
 
-Учебный Restaurant AI Agent. M1, M2, M3.1 и M3.2 приняты. Владелец настроил постоянный `THREAD_ID_HMAC_SECRET`, запустил backend и подтвердил ручной Telegram E2E M3.2 без изменения поведения M3.1. Исходные DOCX остаются в ChatGPT Sources.
+Учебный Restaurant AI Agent. M1, M2, M3.1, M3.2 и M4 приняты. M4 добавил отдельный read-only MCP stdio server/client и deterministic menu/cart subtotal tools без подключения к LangGraph. Владелец ранее подтвердил ручной Telegram E2E M3.2. Исходные DOCX остаются в ChatGPT Sources.
 
 ## Прежде чем продолжать
 
@@ -87,6 +87,30 @@ Google Sheets изменял только пользователь. Codex исп
 
 ## Следующий безопасный шаг
 
-1. M3.2 закрыт как READY; дополнительных действий по acceptance не требуется.
-2. Следующий этап — M4 MCP Tools, NOT STARTED. Начинать только по отдельному заданию.
-3. PERF-001 перед оптимизацией требует измерений; MCP/orders/Calendar остаются вне M3.2.
+1. M4 закрыт как READY; `search_menu`, `get_dish`, `calculate_cart`, backend adapter, migration `0002` и real stdio acceptance PASS.
+2. Основная development-БД `restaurant` уже обновлена штатной командой `alembic upgrade head`: revision `0002 (head)`, точная схема `dietary_tags` и сохранность таблиц/counts проверены. Не повторять миграцию без отдельной причины.
+3. Не подключать MCP к LangGraph автоматически. Следующий этап — M5 cart/confirmation, только по отдельному заданию владельца.
+4. M7 должен добавить explicit `dietary_tags` в Sheets Menu sync; не выводить теги из ingredients/allergens.
+5. PERF-001 перед оптимизацией требует измерений; orders/Calendar/admin sync остаются будущими этапами.
+6. Основная development-БД уже содержит 15 synthetic DEV menu rows; повторное применение выполняется только явной командой `python -m scripts.seed_menu`.
+
+## M4 handoff
+
+- Dependency: `mcp==2.0.0`, lock 103 packages. Для этой версии adapter намеренно передаёт в `Client` explicit `stdio_client(StdioServerParameters(...))`.
+- Runtime boundary: `app/menu` contracts/repository/service → `mcp_server` stdio tools → `app/mcp/MenuMcpClient`.
+- PostgreSQL tool transactions выполняют `SET TRANSACTION READ ONLY`; price calculations — только integers/EUR.
+- Limits: search 20 results; 10 tags; cart 20 lines; per-dish quantity 20 after duplicate aggregation; total 100 units.
+- Real acceptance: isolated PostgreSQL, tools/list + all calls, safe failure, subprocess exit and no row-count side effect PASS. Позднее согласованный upgrade working development DB `0001 → 0002` также PASS; 13 таблиц и все row counts сохранены, `menu_items` оставалась пустой.
+- M3.2 regression: 100 offline tests final, checkpoint/Qdrant/migrations integrations, Docker health/live FAQ/log scan PASS. Manual Telegram messages в M4 не отправлялись.
+
+## DEV menu seed handoff
+
+- `scripts.seed_menu` содержит 15 позиций европейского меню со стабильными UUID5 и owned source IDs `dev-menu-001`…`dev-menu-015`. Upsert atomic, сериализован PostgreSQL advisory lock и fail-closed при конфликте UUID/source ownership; произвольные строки не удаляются.
+- Working DB `restaurant`: 15 seed rows, 15 distinct UUID, 15 distinct source IDs; categories `3/3/5/2/2`, одна unavailable позиция. Alembic остаётся `0002 (head)`.
+- Идемпотентность фактически проверена повторным запуском: после первоначальных 15 inserts последующие runs возвращают `created=0`, `updated=15`, `total=15`.
+- Existing `MenuMcpClient` smoke по working DB PASS для всех трёх tools, включая filters, deterministic subtotals, duplicate aggregation и safe unavailable rejection.
+- M5 не начат: seed не подключает MCP к LangGraph, не создаёт cart/order/Calendar и не реализует Sheets Menu sync.
+
+## Состояние Git после handoff
+
+Владелец выполнил commit и push реализации M1–M3.2. Текущий commit ветки `main` — `b087c31`; M4 implementation и последующие documentation updates остаются незакоммиченными. Историческое предупреждение `history/011_HANDOFF_report.md` о 56 entries не является актуальным снимком; перед дальнейшей работой всегда проверять фактический `git status`.

@@ -13,3 +13,9 @@ def test_expected_m1_tables_are_registered() -> None:
         "unanswered_questions",
         "calendar_jobs",
     }
+
+
+def test_menu_items_include_explicit_dietary_tags() -> None:
+    column = Base.metadata.tables["menu_items"].c.dietary_tags
+    assert column.nullable is False
+    assert column.server_default is not None

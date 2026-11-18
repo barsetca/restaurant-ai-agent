@@ -59,3 +59,15 @@ def test_faq_credentials_are_optional_when_disabled() -> None:
 def test_faq_configuration_is_validated_when_enabled() -> None:
     with pytest.raises(ValidationError, match="FAQ_ENABLED=true requires"):
         Settings(_env_file=None, faq_enabled=True, openai_api_key=None)
+
+
+def test_mcp_timeouts_are_positive_and_bounded() -> None:
+    settings = Settings(
+        _env_file=None,
+        mcp_startup_timeout_seconds=1,
+        mcp_tool_timeout_seconds=2,
+        mcp_shutdown_timeout_seconds=3,
+    )
+    assert settings.mcp_tool_timeout_seconds == 2
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, mcp_tool_timeout_seconds=0)
