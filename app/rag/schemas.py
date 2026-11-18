@@ -63,3 +63,5 @@ class AnswerDecision(BaseModel):
     supported: bool
     conflicting: bool
     answer: str
+    clarification_needed: bool
+    clarification: str

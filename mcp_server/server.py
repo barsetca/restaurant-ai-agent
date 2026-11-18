@@ -91,8 +91,8 @@ def create_mcp_server(
 
     @server.tool()
     async def search_menu(
-        query: SearchQuery,
         ctx: Context,
+        query: SearchQuery | None = None,
         category: CategoryFilter | None = None,
         dietary_tags: DietaryTags | None = None,
     ) -> MenuSearchResult:

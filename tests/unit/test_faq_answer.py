@@ -18,7 +18,11 @@ def _assistant(context, decision=None):
     retrieval.retrieve.return_value = context
     answerer = AsyncMock()
     answerer.answer.return_value = decision or AnswerDecision(
-        supported=True, conflicting=False, answer="Ресторан работает до 22:00."
+        supported=True,
+        conflicting=False,
+        answer="Ресторан работает до 22:00.",
+        clarification_needed=False,
+        clarification="",
     )
     return FaqAssistant(retrieval, answerer), retrieval, answerer
 
@@ -38,9 +42,31 @@ async def test_unknown_or_insufficient_context_falls_back() -> None:
 async def test_unsupported_model_decision_falls_back() -> None:
     assistant, _, _ = _assistant(
         [_result()],
-        AnswerDecision(supported=False, conflicting=False, answer="Недостоверно"),
+        AnswerDecision(
+            supported=False,
+            conflicting=False,
+            answer="Недостоверно",
+            clarification_needed=False,
+            clarification="",
+        ),
     )
     assert await assistant.answer("Вопрос") == FALLBACK_MESSAGE
+
+
+async def test_related_but_ambiguous_question_returns_safe_clarification() -> None:
+    assistant, _, _ = _assistant(
+        [_result()],
+        AnswerDecision(
+            supported=False,
+            conflicting=False,
+            answer="",
+            clarification_needed=True,
+            clarification="Вы хотите узнать часы работы ресторана или как оформить заказ?",
+        ),
+    )
+    assert await assistant.answer("Как работает ресторан?") == (
+        "Вы хотите узнать часы работы ресторана или как оформить заказ?"
+    )
 
 
 async def test_conflicting_entries_fall_back_without_model_call() -> None:

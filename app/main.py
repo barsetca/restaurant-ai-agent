@@ -11,6 +11,10 @@ from app.bot.bootstrap import build_telegram_application, start_polling, stop_po
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.db.session import create_engine
+from app.mcp.client import MenuMcpClient
+from app.orders.dialog import OrderDialog
+from app.orders.intent import LlmOrderIntentExtractor
+from app.orders.settings import OrderSettingsRepository
 from app.rag.runtime import build_faq_runtime
 
 
@@ -49,9 +53,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "LangGraph checkpoint schema is unavailable; "
                         "run the explicit checkpoint setup command"
                     )
+                intent_extractor = (
+                    LlmOrderIntentExtractor(
+                        app_settings.openai_api_key,
+                        app_settings.openai_chat_model,
+                        app_settings.faq_request_timeout_seconds,
+                    )
+                    if app_settings.openai_api_key
+                    else None
+                )
+
+                def menu_factory() -> MenuMcpClient:
+                    return MenuMcpClient(
+                        app_settings.database_url,
+                        startup_timeout_seconds=app_settings.mcp_startup_timeout_seconds,
+                        tool_timeout_seconds=app_settings.mcp_tool_timeout_seconds,
+                        shutdown_timeout_seconds=app_settings.mcp_shutdown_timeout_seconds,
+                        log_level=app_settings.log_level,
+                    )
+
+                order_dialog = OrderDialog(
+                    menu_factory,
+                    OrderSettingsRepository(app.state.db_engine),
+                    intent_extractor,
+                )
                 app.state.agent_service = build_agent_service(
                     app.state.faq_runtime.assistant if app.state.faq_runtime else None,
                     app.state.checkpointer,
+                    order_dialog=order_dialog,
                 )
                 telegram_application = build_telegram_application(
                     app_settings.telegram_bot_token or "",

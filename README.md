@@ -2,9 +2,9 @@
 
 ## Overview
 
-This repository contains the infrastructure, FAQ knowledge-base/RAG, deterministic LangGraph routing, PostgreSQL-backed conversation checkpoints, and read-only MCP menu tools for a single synthetic restaurant. FAQ data is read from Google Sheets, embedded through OpenAI, indexed in Qdrant, and converted into a grounded Russian answer. When evidence is missing, conflicting, or an external dependency fails, the assistant returns a fixed safe fallback.
+This repository contains the infrastructure, FAQ RAG, hybrid LangGraph order dialog, PostgreSQL-backed conversation checkpoints, and read-only MCP menu tools for a single synthetic restaurant. FAQ data is read from Google Sheets, embedded through OpenAI, indexed in Qdrant, and converted into a grounded Russian answer. Order language is extracted into a strict proposal while deterministic code owns cart mutations, pricing, validation, and confirmation.
 
-Persistent carts, order creation, Google Calendar, Menu/Settings sync, admin UI, and operator handoff are not implemented yet.
+Cart/contact/confirmed drafts persist in the official checkpoint. Durable order creation, Google Calendar, Menu/Settings sync, admin UI, and operator handoff are not implemented yet.
 
 ## Architecture
 
@@ -14,7 +14,8 @@ Persistent carts, order creation, Google Calendar, Menu/Settings sync, admin UI,
 - `app/rag/retrieval.py` applies configurable `top_k` and score threshold.
 - `app/rag/answer_service.py` asks OpenAI for a structured support/conflict decision and only returns a grounded answer.
 - `app/bot` reuses one `python-telegram-bot` polling application and derives versioned HMAC thread IDs without storing raw chat IDs in graph state.
-- `app/agent` compiles one deterministic LangGraph with an official async PostgreSQL checkpointer; same-thread messages are serialized while different threads remain concurrent.
+- `app/agent` compiles one state-aware LangGraph with an official async PostgreSQL checkpointer; same-thread messages are serialized and Telegram update replay is bounded.
+- `app/orders` limits LLM authority to structured intent extraction and implements deterministic cart, contact, quote, and explicit confirmation rules.
 - `app/menu` performs bounded menu search and deterministic integer-minor-unit cart calculation in transaction-level read-only PostgreSQL sessions.
 - `mcp_server` exposes `search_menu`, `get_dish`, and `calculate_cart` over stdio; `app/mcp` is the typed backend client adapter.
 - PostgreSQL remains the application database; M2 does not use it as a second FAQ index-state store.
@@ -105,7 +106,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-This starts `backend`, `postgres`, and `qdrant` with persistent volumes. The credentials file is bind-mounted read-only into the backend when `GOOGLE_CREDENTIALS_PATH` points to a host file; it is not copied into the image. The MCP server is a local stdio subprocess started on demand by `MenuMcpClient`; it is not a separate Compose service and is not wired into the M3.2 order placeholder.
+This starts `backend`, `postgres`, and `qdrant` with persistent volumes. The credentials file is bind-mounted read-only into the backend when `GOOGLE_CREDENTIALS_PATH` points to a host file; it is not copied into the image. The MCP server is not a separate Compose service: the M5 order dialog starts it on demand through `MenuMcpClient`.
 
 ```bash
 docker compose config
@@ -185,11 +186,27 @@ uv run python -m mcp_server
 
 The backend-facing `MenuMcpClient` launches that fixed module command with a restricted child environment and validates structured results. All tools read PostgreSQL in read-only transactions:
 
-- `search_menu(query, category?, dietary_tags?)` returns at most 20 available dishes;
+- `search_menu(query?, category?, dietary_tags?)` returns at most 20 available dishes; omitted/blank query browses the menu in deterministic order;
 - `get_dish(dish_id)` returns current details, price, dietary data, and availability;
 - `calculate_cart(items)` aggregates duplicate IDs and returns an EUR `subtotal_minor` without delivery.
 
-Inputs are bounded to 20 cart lines, quantity 1–20 per dish after aggregation, and 100 total units. Missing/unavailable dishes, unsupported currencies, or any invalid item reject the complete calculation. M4 creates no cart/order rows and performs no Calendar action.
+Inputs are bounded to 20 cart lines, quantity 1–20 per dish after aggregation, and 100 total units. Missing/unavailable dishes, unsupported currencies, or any invalid item reject the complete calculation.
+
+## M5 cart and confirmation
+
+The Telegram order flow supports menu browse/search/details, Russian word forms through canonical lookup plus PostgreSQL full-text fallback, atomic multi-item add, set/decrement/remove/clear/view, FAQ interleaving, delivery contacts, ASAP or exact `DD.MM.YYYY HH:MM` delivery time, authoritative quote, and explicit confirmation. The LLM receives only the current non-contact message and returns a typed proposal; it never receives phone/address/checkpoint data, chooses dish IDs, or mutates/prices the cart.
+
+`restaurant_settings` must contain a canonical non-negative integer `delivery_fee_minor`. There is no application default. For the approved development value:
+
+```sql
+INSERT INTO restaurant_settings (key, value)
+VALUES ('delivery_fee_minor', '350')
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
+```
+
+The final summary has revision-bound inline actions: **Подтвердить / Изменить / Отменить**. Edit offers cart, name, phone, address, time, and fresh-summary choices; a real change invalidates the previous quote and requires explicit confirmation again. Cancel requires a second **Да, отменить** action. Stale callbacks are rejected before mutation. A cart-only strict typo fallback can propose a numbered candidate, but never silently selects it.
+
+Confirmation produces an immutable checkpoint `confirmed_order` for M6 and replies that the order has not yet been placed. «Новый заказ» archives it in FIFO order and starts an empty draft; at most five current/archive snapshots are retained per thread. `/start` is non-destructive and confirmed snapshots survive draft cancellation. Telegram responses use one sanitized delivery helper: only pre-delivery `ConnectError` gets one bounded retry; ambiguous timeouts are not retried. None of these actions writes `orders`, `order_items`, or `calendar_jobs`.
 
 ## Tests
 
@@ -226,12 +243,21 @@ TEST_MCP_DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/restaura
   uv run pytest tests/integration/test_mcp_stdio_postgres.py
 ```
 
+The M5 integration test uses the same guarded test-only URL, real stdio MCP, official checkpoint, and restores its synthetic setting/menu rows:
+
+```bash
+TEST_MCP_DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/restaurant_m5_test \
+  uv run pytest tests/integration/test_m5_order_postgres.py
+```
+
+Manual Telegram acceptance should use synthetic contact data and cover: `/start` in idle/draft/confirmed; Russian multi-item add including «две брускетты»; typo «брускету» with explicit numbered selection; multiple ambiguity selections without partial cart mutation; inline ASAP/manual time and future `ДД.ММ.ГГГГ ЧЧ:ММ`; FAQ clarification; summary buttons; editing every field; stale-button rejection; two-step cancel; backend restart recovery; repeated confirmation; new order, second confirmation and preserved first snapshot. Verify afterward that business order/calendar tables remain unchanged.
+
 Live Google Sheets/OpenAI/Qdrant verification has passed on synthetic FAQ data, including update and deactivation without restart. Telegram `/start` and FAQ chat flows have also been verified. HTTP diagnostics remain enabled, with centralized redaction of tokens, API keys, authorization headers, URL passwords, and exception tracebacks.
 
 ## Current status
 
-M2, M3.1, M3.2, and M4 are READY. M4 protocol/PostgreSQL/real-stdio tests pass without modifying working restaurant data, and M3.2 checkpoint/Qdrant/Docker/live FAQ regressions remain green. The owner previously confirmed `/start`, FAQ, order placeholder, and unknown fallback in Telegram. PERF-001 remains open: the owner observes a roughly 5–10 second first FAQ response with faster subsequent responses, but the cause has not been measured. See `docs/DEVELOPMENT_STATUS.md` for exact results.
+M1–M4 are READY. M5 implementation and DEF-M5-001–008 fixes pass automated acceptance, but M5 remains IN PROGRESS until the owner confirms manual Telegram round 3. No durable order or Calendar side effect exists in M5. PERF-001 and checkpoint PII retention/pruning remain open. See `docs/DEVELOPMENT_STATUS.md` for exact results.
 
 ## Next milestones
 
-The next milestone is M5 cart and confirmation flow. Do not start it automatically. MCP is intentionally not connected to the LangGraph order placeholder yet. Full LLM conversation history, checkpoint retention, distributed multi-instance coordination, orders, Calendar, admin sync, evaluation, and PERF-001 instrumentation remain future work.
+After manual M5 acceptance, the next milestone is M6 durable order persistence and Calendar workflow. Do not start it automatically. Checkpoint retention, distributed multi-instance coordination, Calendar, admin sync, evaluation, and PERF-001 instrumentation remain future work.

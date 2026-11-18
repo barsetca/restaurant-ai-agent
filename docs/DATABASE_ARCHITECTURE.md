@@ -57,5 +57,13 @@ Psycopg соединения saver используют `autocommit=True`, `prep
 
 MCP repository использует существующий SQLAlchemy model и для каждого tool call открывает транзакцию с `SET TRANSACTION READ ONLY`. `calculate_cart` читает актуальные rows одним запросом и вычисляет line totals/subtotal в Python integer minor units; таблицы cart/order не изменяются.
 
+## Реализация M5
+
+- Persistent cart table не добавляется. Official checkpoint хранит JSON-safe bounded state: stage, current callback action/revision/optional destructive confirmation ID, canonical `{dish_id, quantity}`, candidates/full pending batch, optional pending destructive action/return stage/session ID, validated contacts, quote/revision, immutable current/archive confirmed snapshots и до 32 processed Telegram updates. Destructive callback data содержит bounded action name, integer draft revision и short opaque session ID без PII; остальные callbacks сохраняют action/revision.
+- Validated name/phone/address находятся в checkpoint и поэтому являются PII. Unconfirmed draft очищается при cancel; до пяти confirmed snapshots суммарно сохраняются FIFO для M6. Production retention/pruning и удаление archive пока не определены.
+- `OrderSettingsRepository` читает `restaurant_settings['delivery_fee_minor']` внутри `SET TRANSACTION READ ONLY`; допускается только canonical non-negative integer string. Missing/invalid/negative value блокирует summary/confirmation.
+- В основной development-БД key установлен явной operator-операцией в `350` minor units. Это runtime data, не Alembic migration и не application default.
+- M5 не выполняет INSERT/UPDATE в `orders`, `order_items`, `calendar_jobs` или menu rows. Quote и confirmation остаются checkpoint draft; durable order появляется только в M6 после повторной проверки.
+
 ## Нерешенные вопросы
-Представление `restaurant_settings.value`, жизненный цикл статусов заказа и Calendar, а также retention/pruning checkpoint history. Решать в соответствующем milestone и отражать в `DECISIONS.md`.
+Жизненный цикл статусов заказа и Calendar, схема M6 persistence/idempotency, а также retention/pruning checkpoint history с PII. Решать в соответствующем milestone и отражать в `DECISIONS.md`.

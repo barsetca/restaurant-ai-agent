@@ -3,11 +3,25 @@ from time import perf_counter
 
 import httpx
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 from telegram.request import HTTPXRequest
 
-from app.agent.service import AgentService
-from app.bot.handlers import text_message_handler
+from app.agent.service import AgentResponse, AgentService
+from app.bot.handlers import (
+    _response_markup,
+    agent_response,
+    order_callback_handler,
+    safe_send_reply,
+    telegram_error_handler,
+    text_message_handler,
+)
 
 logger = logging.getLogger(__name__)
 _REQUEST_STARTED_AT = "restaurant_ai_request_started_at"
@@ -33,9 +47,20 @@ async def _telegram_response_received(response: httpx.Response) -> None:
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
-    if update.message:
-        await update.message.reply_text("Restaurant AI Agent is running.")
+    if update.message is None:
+        return
+    application = getattr(context, "application", None)
+    bot_data = getattr(application, "bot_data", {})
+    if isinstance(bot_data.get("agent_service"), AgentService):
+        result = await agent_response(update, context, "/start")
+    else:
+        result = AgentResponse("Restaurant AI Agent is running.", None, None, None)
+    await safe_send_reply(
+        update.message,
+        result.text,
+        reply_markup=_response_markup(result),
+        operation="start_response",
+    )
 
 
 def build_telegram_application(
@@ -63,7 +88,14 @@ def build_telegram_application(
         application.bot_data["agent_service"] = agent_service
         application.bot_data["thread_id_hmac_secret"] = thread_id_hmac_secret
         application.bot_data["thread_id_hmac_key_id"] = thread_id_hmac_key_id
+        application.add_handler(
+            CallbackQueryHandler(
+                order_callback_handler,
+                pattern=r"^order:[a-z_]+:[0-9]+(?::[A-Za-z0-9_-]{12})?$",
+            )
+        )
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
+    application.add_error_handler(telegram_error_handler)
     return application
 
 

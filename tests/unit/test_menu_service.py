@@ -63,9 +63,8 @@ async def test_search_normalizes_filters_and_returns_integer_prices() -> None:
     )
 
 
-def test_contracts_reject_blank_duplicate_and_oversized_values() -> None:
-    with pytest.raises(ValidationError):
-        SearchMenuRequest(query="   ")
+def test_contracts_accept_blank_as_browse_and_reject_duplicate_and_oversized_values() -> None:
+    assert SearchMenuRequest(query="   ").query is None
     with pytest.raises(ValidationError):
         SearchMenuRequest(query="паста", dietary_tags=["Vegan", " vegan "])
     with pytest.raises(ValidationError):

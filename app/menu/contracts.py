@@ -12,7 +12,7 @@ MAX_ITEM_QUANTITY = 20
 MAX_CART_UNITS = 100
 SUPPORTED_CURRENCY = "EUR"
 
-SearchQuery = Annotated[str, Field(min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH)]
+SearchQuery = Annotated[str, Field(max_length=MAX_SEARCH_QUERY_LENGTH)]
 CategoryFilter = Annotated[str, Field(min_length=1, max_length=120)]
 DietaryTag = Annotated[str, Field(min_length=1, max_length=MAX_DIETARY_TAG_LENGTH)]
 Quantity = Annotated[int, Field(ge=1, le=MAX_ITEM_QUANTITY)]
@@ -31,17 +31,17 @@ class MenuContract(BaseModel):
 
 
 class SearchMenuRequest(MenuContract):
-    query: SearchQuery
+    query: SearchQuery | None = None
     category: CategoryFilter | None = None
     dietary_tags: list[DietaryTag] = Field(default_factory=list, max_length=MAX_DIETARY_TAGS)
 
     @field_validator("query")
     @classmethod
-    def normalize_query(cls, value: str) -> str:
+    def normalize_query(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         cleaned = _clean_text(value)
-        if not cleaned:
-            raise ValueError("query must not be blank")
-        return cleaned
+        return cleaned or None
 
     @field_validator("category")
     @classmethod

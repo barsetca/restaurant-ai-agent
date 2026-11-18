@@ -117,6 +117,15 @@ async def test_real_stdio_tools_read_postgres_and_process_exits() -> None:
             )
             assert [item.dish_id for item in search.items] == [pasta_id]
 
+            morphology_search = await adapter.search_menu(
+                "тестовые пасты", category="test-main"
+            )
+            assert pasta_id in [item.dish_id for item in morphology_search.items]
+
+            browse = await adapter.search_menu()
+            assert len(browse.items) <= 20
+            assert all(item.currency == "EUR" for item in browse.items)
+
             detail = await adapter.get_dish(unavailable_id)
             assert detail.available is False
             assert detail.price_minor == 500

@@ -92,7 +92,9 @@ async def test_telegram_without_faq_builds_safe_agent_once(monkeypatch) -> None:
         assert app.state.telegram_application is telegram_application
 
     build_faq_runtime.assert_not_called()
-    build_agent_service.assert_called_once_with(None, checkpointer)
+    assert build_agent_service.call_count == 1
+    assert build_agent_service.call_args.args == (None, checkpointer)
+    assert build_agent_service.call_args.kwargs["order_dialog"].__class__.__name__ == "OrderDialog"
     build_telegram_application.assert_called_once_with(
         "123456:synthetic-token",
         agent_service,

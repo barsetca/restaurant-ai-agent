@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from uuid import UUID
 
-from sqlalchemy import case, func, or_, select, text
+from sqlalchemy import case, func, literal_column, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.db.models import MenuItem
@@ -25,36 +25,47 @@ class MenuRepository:
                 yield session
 
     async def search(self, request: SearchMenuRequest) -> Sequence[MenuItem]:
-        escaped = _escape_like(request.query.casefold())
-        contains = f"%{escaped}%"
-        starts = f"{escaped}%"
         name_lower = func.lower(MenuItem.name)
-        description_lower = func.lower(func.coalesce(MenuItem.description, ""))
-        ingredients_lower = func.lower(func.array_to_string(MenuItem.ingredients, " "))
         category_lower = func.lower(MenuItem.category)
-
-        statement = (
-            select(MenuItem)
-            .where(
-                MenuItem.available.is_(True),
+        statement = select(MenuItem).where(MenuItem.available.is_(True))
+        if request.query is not None:
+            escaped = _escape_like(request.query.casefold())
+            contains = f"%{escaped}%"
+            starts = f"{escaped}%"
+            description_lower = func.lower(func.coalesce(MenuItem.description, ""))
+            ingredients_lower = func.lower(func.array_to_string(MenuItem.ingredients, " "))
+            russian = literal_column("'russian'::regconfig")
+            searchable = func.concat_ws(
+                " ",
+                MenuItem.name,
+                func.coalesce(MenuItem.description, ""),
+                func.array_to_string(MenuItem.ingredients, " "),
+                MenuItem.category,
+            )
+            search_vector = func.to_tsvector(russian, searchable)
+            search_query = func.plainto_tsquery(russian, request.query)
+            full_text_match = search_vector.op("@@")(search_query)
+            statement = statement.where(
                 or_(
                     name_lower.like(contains, escape="\\"),
                     description_lower.like(contains, escape="\\"),
                     ingredients_lower.like(contains, escape="\\"),
                     category_lower.like(contains, escape="\\"),
-                ),
-            )
-            .order_by(
+                    full_text_match,
+                )
+            ).order_by(
                 case(
                     (name_lower == request.query.casefold(), 0),
                     (name_lower.like(starts, escape="\\"), 1),
                     else_=2,
                 ),
+                func.ts_rank_cd(search_vector, search_query).desc(),
                 name_lower,
                 MenuItem.id,
             )
-            .limit(MAX_SEARCH_RESULTS)
-        )
+        else:
+            statement = statement.order_by(name_lower, MenuItem.id)
+        statement = statement.limit(MAX_SEARCH_RESULTS)
         if request.category is not None:
             statement = statement.where(category_lower == request.category.casefold())
         if request.dietary_tags:

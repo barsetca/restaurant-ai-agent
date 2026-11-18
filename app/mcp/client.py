@@ -137,11 +137,13 @@ class MenuMcpClient:
 
     async def search_menu(
         self,
-        query: str,
+        query: str | None = None,
         category: str | None = None,
         dietary_tags: list[str] | None = None,
     ) -> MenuSearchResult:
-        arguments: dict[str, Any] = {"query": query}
+        arguments: dict[str, Any] = {}
+        if query is not None:
+            arguments["query"] = query
         if category is not None:
             arguments["category"] = category
         if dietary_tags is not None:

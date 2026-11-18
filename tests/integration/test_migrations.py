@@ -24,6 +24,12 @@ EXPECTED_TABLES = {
     "unanswered_questions",
     "calendar_jobs",
 }
+CHECKPOINT_TABLES = {
+    "checkpoint_migrations",
+    "checkpoints",
+    "checkpoint_blobs",
+    "checkpoint_writes",
+}
 
 
 def _test_database_url() -> str:
@@ -63,7 +69,10 @@ async def _inspect_schema(url: str) -> None:
         async with engine.connect() as connection:
             def inspect_sync(sync_connection) -> None:
                 inspector = inspect(sync_connection)
-                tables = set(inspector.get_table_names()) - {"alembic_version"}
+                all_tables = set(inspector.get_table_names())
+                checkpoint_tables = all_tables & CHECKPOINT_TABLES
+                assert checkpoint_tables in (set(), CHECKPOINT_TABLES)
+                tables = all_tables - {"alembic_version"} - CHECKPOINT_TABLES
                 assert tables == EXPECTED_TABLES
 
                 for table in EXPECTED_TABLES:
@@ -115,7 +124,14 @@ async def _inspect_schema(url: str) -> None:
                     "ix_calendar_jobs_status_next_attempt",
                 } <= index_names
 
-                context = MigrationContext.configure(sync_connection)
+                def include_name(name, type_, parent_names):
+                    del parent_names
+                    return not (type_ == "table" and name in CHECKPOINT_TABLES)
+
+                context = MigrationContext.configure(
+                    sync_connection,
+                    opts={"include_name": include_name},
+                )
                 assert compare_metadata(context, Base.metadata) == []
 
             await connection.run_sync(inspect_sync)

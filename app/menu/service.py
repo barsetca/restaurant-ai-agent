@@ -58,7 +58,7 @@ class MenuService:
 
     async def search_menu(
         self,
-        query: str,
+        query: str | None = None,
         category: str | None = None,
         dietary_tags: list[str] | None = None,
     ) -> MenuSearchResult:

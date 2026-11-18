@@ -89,6 +89,7 @@ async def test_protocol_lists_and_calls_all_tools_with_structured_output() -> No
             "category",
             "dietary_tags",
         }
+        assert "query" not in search_tool.input_schema.get("required", [])
 
         search = await client.call_tool(
             "search_menu",
@@ -96,6 +97,9 @@ async def test_protocol_lists_and_calls_all_tools_with_structured_output() -> No
         )
         assert search.is_error is False
         assert search.structured_content["items"][0]["price_minor"] == 1234
+
+        browse = await client.call_tool("search_menu", {})
+        assert browse.is_error is False
 
         detail = await client.call_tool("get_dish", {"dish_id": str(KNOWN_DISH_ID)})
         assert detail.is_error is False

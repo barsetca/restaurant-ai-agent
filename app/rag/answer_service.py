@@ -89,7 +89,15 @@ class FaqAssistant:
             if not context or has_direct_conflict(context):
                 return FALLBACK_MESSAGE
             decision = await self._answerer.answer(question, context)
-            if not decision.supported or decision.conflicting or not decision.answer.strip():
+            if decision.conflicting:
+                return FALLBACK_MESSAGE
+            if (
+                not decision.supported
+                and decision.clarification_needed
+                and decision.clarification.strip()
+            ):
+                return decision.clarification.strip()
+            if not decision.supported or not decision.answer.strip():
                 return FALLBACK_MESSAGE
             return decision.answer.strip()
         except Exception:
