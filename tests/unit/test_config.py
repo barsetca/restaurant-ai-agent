@@ -71,3 +71,23 @@ def test_mcp_timeouts_are_positive_and_bounded() -> None:
     assert settings.mcp_tool_timeout_seconds == 2
     with pytest.raises(ValidationError):
         Settings(_env_file=None, mcp_tool_timeout_seconds=0)
+
+
+def test_llm_debug_response_json_is_dev_only_and_disabled_by_default() -> None:
+    default = Settings(_env_file=None)
+    assert default.llm_debug_response_json is False
+    assert default.llm_debug_response_json_enabled is False
+
+    development = Settings(
+        _env_file=None,
+        app_env="development",
+        llm_debug_response_json=True,
+    )
+    assert development.llm_debug_response_json_enabled is True
+
+    production = Settings(
+        _env_file=None,
+        app_env="production",
+        llm_debug_response_json=True,
+    )
+    assert production.llm_debug_response_json_enabled is False

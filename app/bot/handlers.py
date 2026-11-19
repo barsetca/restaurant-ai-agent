@@ -34,12 +34,37 @@ def _response_markup(result: AgentResponse) -> InlineKeyboardMarkup | None:
     revision = result.draft_revision
     if revision is None:
         return None
-    if result.order_stage in {"collecting_time", "collecting_edit_time"}:
+    if result.clarification_id is not None:
         return InlineKeyboardMarkup(
             [[
-                _button("Как можно скорее", "time_asap", revision),
-                _button("Выбрать дату и время", "time_manual", revision),
+                _button("Показать корзину", "clarify_view_cart", revision, result.clarification_id),
+                _button("Перейти к оформлению", "clarify_checkout", revision, result.clarification_id),
             ]]
+        )
+    checkout_session_id = result.checkout_session_id
+    if (
+        result.order_stage in {"collecting_time", "collecting_edit_time"}
+        and checkout_session_id is not None
+    ):
+        return InlineKeyboardMarkup(
+            [
+                [
+                    _button("Как можно скорее", "time_asap", revision, checkout_session_id),
+                    _button("Выбрать дату и время", "time_manual", revision, checkout_session_id),
+                ],
+                [_button("Отменить оформление", "cancel_checkout", revision, checkout_session_id)],
+            ]
+        )
+    if result.order_stage in {
+        "collecting_name",
+        "collecting_phone",
+        "collecting_address",
+        "collecting_edit_name",
+        "collecting_edit_phone",
+        "collecting_edit_address",
+    } and checkout_session_id is not None:
+        return InlineKeyboardMarkup(
+            [[_button("Отменить оформление", "cancel_checkout", revision, checkout_session_id)]]
         )
     if result.order_stage == "awaiting_confirmation":
         return InlineKeyboardMarkup(
@@ -262,6 +287,9 @@ async def order_callback_handler(
         "confirm_new_order": "Начать новый заказ",
         "confirm_clear": "Очистить корзину",
         "keep_current_order": "Оставить текущий",
+        "clarify_view_cart": "Показать корзину",
+        "clarify_checkout": "Перейти к оформлению",
+        "cancel_checkout": "Отменить оформление",
     }.get(action, "")
     result = await agent_response(
         update,

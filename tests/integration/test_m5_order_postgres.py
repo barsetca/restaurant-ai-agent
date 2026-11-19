@@ -1,5 +1,4 @@
 import os
-from contextlib import asynccontextmanager
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -17,7 +16,7 @@ from app.agent.service import AgentService
 from app.db.models import MenuItem, RestaurantSetting
 from app.mcp.client import MenuMcpClient
 from app.bot.handlers import safe_send_reply
-from app.orders.contracts import OrderIntentProposal
+from app.orders.contracts import ActionOutcome, ContextualOutcome
 from app.orders.dialog import CONFIRMED_MESSAGE, OrderDialog
 from app.orders.settings import DELIVERY_FEE_KEY, OrderSettingsRepository
 
@@ -37,13 +36,14 @@ class ScriptedExtractor:
         self.dish_name = dish_name
         self.messages: list[str] = []
 
-    async def extract(self, message: str) -> OrderIntentProposal:
+    async def extract(self, message: str, context: object) -> ContextualOutcome:
+        del context
         self.messages.append(message)
         if message == "добавь тестовое блюдо":
-            return OrderIntentProposal(
+            return ActionOutcome(
                 action="add", items=[{"name": self.dish_name, "quantity": 2}]
             )
-        return OrderIntentProposal(action="faq")
+        return ActionOutcome(action="faq")
 
 
 class Faq:

@@ -34,6 +34,8 @@ class AgentResponse:
     draft_revision: int | None
     error_code: str | None
     destructive_confirmation_id: str | None = None
+    clarification_id: str | None = None
+    checkout_session_id: str | None = None
 
 
 class AgentService:
@@ -121,6 +123,14 @@ class AgentService:
         revision = result.get("draft_revision")
         pending = result.get("pending_destructive_action")
         confirmation_id = pending.get("confirmation_id") if isinstance(pending, dict) else None
+        clarification = result.get("pending_clarification")
+        clarification_id = (
+            clarification.get("clarification_id")
+            if isinstance(clarification, dict)
+            and clarification.get("reason") == "order_intent"
+            else None
+        )
+        checkout_session_id = result.get("checkout_session_id")
         return AgentResponse(
             text=text,
             order_stage=result.get("order_stage") if isinstance(result.get("order_stage"), str) else None,
@@ -128,6 +138,14 @@ class AgentService:
             error_code=result.get("error_code") if isinstance(result.get("error_code"), str) else None,
             destructive_confirmation_id=(
                 confirmation_id if isinstance(confirmation_id, str) else None
+            ),
+            clarification_id=(
+                clarification_id if isinstance(clarification_id, str) else None
+            ),
+            checkout_session_id=(
+                checkout_session_id
+                if isinstance(checkout_session_id, str)
+                else None
             ),
         )
 

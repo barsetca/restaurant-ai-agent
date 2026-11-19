@@ -194,3 +194,159 @@ Google Sheets изменял только пользователь. Codex исп
 - Текст «Начать новый заказ» / «Очистить корзину» / «Да, отменить» в confirmation stage не подтверждает mutation: destructive confirm/decline выполняются только callback-кнопкой.
 - Test evidence: request1→decline→request2 с одинаковыми stage/revision отклоняет старую session и принимает новую для all three actions; duplicate update выполняется once; rebuilt graph + same saver восстанавливает pending session; targeted 61 PASS, unit/full host 160 PASS, 8 external skips.
 - Не менялись MCP, DB/schema/config/dependencies. M5 remains IN PROGRESS; M5.2-A2/M6 не начинать, commit/push запрещены без отдельного разрешения.
+
+## M5.2-A2 analysis handoff
+
+- Read-only analysis выполнен на `main` / `db0fbca3cd86e9e3a0a0c16c6e5279b9430271a4`; local `origin/main` совпадал с HEAD. `docs/M5_2_DESIGN_HANDOFF.md` найден как untracked owner-provided design input и не редактировался.
+- Current checkpoint не содержит conversation history: только последнее `user_message`, transient proposal/callback, order data и до 32 replay responses. Replay responses нельзя давать LLM: они могут содержать summary PII и не содержат user/callback semantics.
+- Existing extractor получает только current raw message. Validated contacts/full checkpoint ему не передаются, но это не гарантирует отсутствие PII, если пользователь сам вводит имя/адрес/телефон в arbitrary free text. Regex-only redaction недостаточен.
+- Минимальная граница A2: pure allowlist `ContextBuilder` в orders boundary, typed `ExpectedInput`, trusted public last-dish label/server-side ID, максимум 10 semantic events / 5 exchanges без raw text, discriminated `action/clarify/unsupported` outcome и stage-specific LLM action allowlist. Dish IDs/callback actions/state mutations остаются backend-only.
+- Generic `pending_clarification` должен иметь отдельный short session, allowed resolutions, return stage и draft revision. Он не заменяет `PendingBatch`, не сосуществует с actionable A1 destructive pending и не использует будущий A4 summary session.
+- Required current gaps: «Покажи салаты» при сборе имени сейчас может сохраниться как имя; «этого блюда» не имеет referent; retrospective phrase может ошибочно стать add; previous-order query не имеет truthful typed action; FAQ interleaving распознается узким heuristic.
+- Вариант B A4 сохранен как future constraint: `summary_session_id` независим от `draft_revision`, A1 `confirmation_id` и A2 clarification session. A2 не реализует `ui_view`, CatalogController, summary session или images.
+- Рекомендуемые increments: A2.1 contracts/context/history/typed extractor, затем A2.2 clarification/required scenarios/Telegram choices. До реализации владелец должен подтвердить PII policy, history bounds, clarification buttons, previous-order wording и formal A1 manual status.
+- Fresh checks: targeted unit 68 PASS; all unit 160 PASS. PostgreSQL/MCP/Qdrant/Docker/live OpenAI/Telegram NOT RUN. Полный отчет: `history/025_M5_2_A2_analysis_report.md`.
+- Следующий безопасный шаг — review/owner decisions и отдельный implementation prompt только для A2 increment. M5 остается IN PROGRESS; M6/M7 не начинать.
+
+## M5.2-A2.1 implementation handoff
+
+- `app/orders/context.py` теперь строит `OrderContext` только из explicit `ContextSource`: stage/expected input, cart counts, LLM action allowlist, typed recent events, trusted public dish label и confirmed counts. Full checkpoint, contacts, UUID/IDs, callback/session values, quote/snapshot bodies и replay responses не передаются.
+- `LlmOrderIntentExtractor.extract(message, context)` возвращает strict `ActionOutcome | ClarifyOutcome | UnsupportedOutcome`. Callback-only/confirm/edit actions исключены из LLM allowlist; adapter создает legacy `OrderIntentProposal` только после schema, PII-output и stage allowlist validation.
+- Contact stages полностью обходят contextual extractor. Exact actions и safe category/FAQ guards выполняются до field capture; «Покажи салаты» сохраняет `collecting_name`, а реальное имя после этого принимается штатно. Obvious-sensitive question на contact stage не отправляется в FAQ/LLM.
+- Semantic history — до 10 JSON-safe FIFO events `{source, semantic, outcome, optional trusted dish_name}`. Raw text/response/PII/IDs отсутствуют. Graph добавляет event в тот же terminal checkpoint update, replay не добавляет duplicate; callbacks представлены смыслом без payload. New order reset удаляет старую transient history/referent.
+- Existing A1 destructive sessions, replay, pending batch atomicity, cart/MCP bounds/pricing, confirmation and immutable archive unchanged. No migration/dependency/callback protocol/business rows/Calendar changes.
+- Automated: compile PASS; A2.1 unit 12 PASS; all unit/full host 172 PASS, external integrations 8 SKIP because `TEST_*` URLs absent; changed-file Ruff and diff check PASS. Live OpenAI/Telegram NOT RUN by task. Real structured schema compatibility therefore remains owner acceptance risk.
+- A2.2 retains persistent clarification, previous-order and stable referent resolution. A3/A4/A5/M6 remain forbidden without separate prompt. Full report: `history/026_M5_2_A2_1_report.md`.
+
+## M5.2-A2.1 Live E2E preparation handoff
+
+- Safe live startup не выполнялся. Configured `.env` указывает на non-test Compose PostgreSQL/Qdrant, а все `TEST_*` URLs отсутствуют. Использовать working database для acceptance запрещено; runtime business data не читались и не менялись.
+- Docker CLI сейчас непригоден: `docker --version`, `docker compose version/config/ps` завершаются `snap-confine` capability error о недоступном `cap_dac_override`. До исправления этой host-проблемы Compose smoke невозможен.
+- Config-only readiness: `.env` валидируется `Settings`; Telegram/OpenAI/HMAC/PostgreSQL/Qdrant values присутствуют без раскрытия значений; required Python packages установлены. `.env` permissions обнаружены как `0664` и должны быть ужесточены владельцем до live использования.
+- Offline structured-output precheck PASS: `ContextualIntentResult` генерирует strict schema с discriminator и тремя variants; `ChatOpenAI.with_structured_output(..., method="json_schema", strict=True)` binding создается с synthetic key без network. Реальная OpenAI API compatibility остается NOT VERIFIED.
+- Fresh diagnostic tests: `tests/unit/test_order_context.py` — 12 PASS; `test_order_dialog.py + test_agent_replay.py` — 46 PASS; `git diff --check` PASS. `pip check` NOT RUN (нет module `pip`), `uv lock --check` NOT RUN (`uv` отсутствует).
+- Correct runtime entrypoint: `docker compose up --build -d backend` (dependencies start automatically) либо host `uv run uvicorn app.main:app --host 0.0.0.0 --port 8000`. MCP не запускается отдельным daemon: backend создает `python -m mcp_server` через stdio при menu operations.
+- Перед E2E создать test-only environment, isolated Compose project/volumes, применить Alembic/checkpoint setup/menu seed/delivery setting только к test DB, исключить одновременный Telegram poller, затем проверить health/logs и manual scenarios. Не использовать `down -v` без отдельного решения об удалении test volumes.
+- Матрица READY/BLOCKED/NOT VERIFIED, точные команды запуска/остановки, log runbook и Telegram checklist находятся в `history/027_M5_2_A2_1_live_e2e_preparation_report.md`. M5 остается IN PROGRESS; M6 не начинать.
+
+## M5.2-A2.1 routing diagnostic handoff
+
+- Pre-extractor FAQ для исследуемой фразы возможен в `collecting_*` из-за `_looks_like_faq()` (`?` + буква). В `idle`/`awaiting_confirmation` вызывается contextual extractor.
+- Valid fake `ActionOutcome(view_cart)` проходит adapter/dialog; action есть во всех relevant allowlists. Offline: idle/order, awaiting_confirmation/order, collecting_name/FAQ with zero extractor calls.
+- Предыдущий exact ответ на «Заказ» кодом не воспроизводится в contact stage, поэтому live route не доказан. Тот же fallback также возвращают FAQ, unknown и graph/agent failures.
+- Proposed fix не реализован: cart-aware deterministic retrospective `view_cart` guard до contact FAQ heuristic; добавить graph sequence и route/error regressions.
+- Application code/tests/schema/dependencies не менялись; 56 tests PASS через system Python. Отчет: `history/028_M5_2_A2_1_message_routing_diagnostics_report.md`. Не начинать fix/M6 и не commit/push без approval.
+
+## M5.2-A2.1 targeted live diagnostic handoff
+
+- Existing logs cannot establish the old event: no local logs, Docker CLI blocked by `snap-confine`, and prior records lacked outcome/route correlation.
+- Temporary enum-only logs are installed: `llm_called`, `llm_result`, `llm_error`, `final_route`, `fallback_reason`. No message, prompt, free-form output, PII, IDs or secrets are recorded.
+- Business behavior unchanged. Compile/diff PASS; 65 targeted tests PASS. Python 3.10 cannot collect existing logging tests (`datetime.UTC`); project 3.12 interpreter symlink is broken.
+- Restart backend and repeat the target Telegram message once. Inspect only five diagnostic message names documented in `history/029_M5_2_A2_1_targeted_live_diagnostics_report.md`.
+- Do not implement a fix or commit/push until the fresh diagnostic tuple is reviewed. Remove temporary instrumentation after diagnosis.
+
+## M5.2-A2.1 OpenAI invalid-request handoff
+
+- Live result proves failure inside `self._structured.ainvoke()` before outcome: `OpenAIInvalidRequestError` → fail-closed unknown → unsupported fallback.
+- Runtime config: `gpt-4.1-mini`, default Chat Completions endpoint, `json_schema`, `strict=True`, discriminated `ContextualIntentResult`; locked SDK versions `langchain-openai 1.8.0`, `openai 3.52.0`, `langchain-core 1.8.1`.
+- Static schema inspection found no conclusive strict-schema violation. Prior logs discarded API status/code/type/param, so concrete rejection is not yet known.
+- Temporary safe fields now expose only `llm_http_status`, allowlisted `llm_api_code/type/param`; never message/body/request/response/IDs.
+- Rebuild and repeat once; inspect only `Order intent extraction failed`. 65 targeted tests and diff PASS. Full report: `history/030_M5_2_A2_1_openai_invalid_request_diagnostics_report.md`.
+- Do not change prompt/routing/business logic or commit/push before reviewing the API fields.
+
+## M5.2-A2.1 Structured Outputs compatibility handoff
+
+- Root cause confirmed at OpenAI response schema: actual bound+SDK schema for domain discriminated union contained rejected `oneOf/discriminator/default` and length/item/range keywords; live API returned HTTP 400 at `response_format`.
+- Extractor now binds a flat constraint-free `ApiContextualIntentResult` under the same `gpt-4.1-mini` / `json_schema` / `strict=True` configuration.
+- DTO fields are all required and objects have `additionalProperties=false`; nullable fields use supported `anyOf`. API DTO is immediately mapped into existing strict domain outcomes, preserving all bounds/action rules and fail-closed behavior.
+- New regression extracts on-wire schema from the real binding via SDK conversion and checks forbidden keywords plus strict required properties. Domain revalidation rejects out-of-range values.
+- Targeted 67 PASS; context 14 PASS; Ruff/compile/diff PASS. Full host unit unavailable because project Python 3.12 interpreter is missing and system 3.10 lacks required packages/features.
+- Rebuild backend and send the target Telegram phrase once; expect no invalid-request record and structured result. Full report: `history/031_M5_2_A2_1_structured_outputs_compatibility_fix_report.md`. No commit/push.
+
+## M5.2-A2.1 ValidationError diagnostic handoff
+
+- Live quantity-change request reached LLM but raised Pydantic `ValidationError` before outcome; previous record lacks field/rule.
+- Current adapter accepts synthetic `set_quantity` quantity 2. Null quantity fails root `value_error` from domain model validator; quantity 21 fails `items.0.quantity/less_than_equal`.
+- Temporary log field `llm_validation_errors` contains only bounded `{loc,type}`; Pydantic input/ctx/url/message and user/LLM data are excluded.
+- Targeted 67 PASS; Ruff/compile/diff PASS. Rebuild, repeat once, and inspect only `Order intent extraction failed`.
+- No functional fix until loc/type confirms the exact rule. Report: `history/032_M5_2_A2_1_validation_error_diagnostics_report.md`. No commit/push.
+
+## M5.2-A2.1 bounded validation recovery handoff
+
+- Prior root ValidationError is most consistent with a model-level `ActionOutcome` rule, but the old run had no pre-domain marker, so API parse vs domain conversion and the payload/rule are not proven. Safe pre-domain diagnostics now emit typed kind/action, items count, aggregate quantity flags and a shared fixed rule code only.
+- Shared rule classifier is also used by the existing domain validator, preserving behavior/messages and avoiding diagnostic drift.
+- Extractor retries at most once only for four repairable parsed-DTO rules: missing items, wrong single-item count, missing set quantity, missing search selector. Retry sends the same safe context/message plus only `VALIDATION_RULE`; never the invalid payload.
+- Result is revalidated through domain contracts, output PII guard and stage allowlist. API/network errors, quantity bounds and second failures do not retry and fail closed. No side effect occurs before success; replay remains exactly once.
+- Tests: 22 context PASS, 77 affected PASS, 95 expanded PASS; Ruff/compile/diff PASS. One live Telegram test remains. Report: `history/033_M5_2_A2_1_validation_recovery_report.md`. No commit/push.
+
+## M5.2-A2.1 DTO normalization/debug handoff
+
+- Confirmed live failure was valid `add` plus irrelevant selectors. Adapter now normalizes by action before domain validation: item payload vs menu selectors vs parameterless payload. It never rewrites action/items/quantity or fills missing values.
+- Irrelevant fields no longer trigger validation/retry. Required data, quantity bounds, unknown/contradictory DTO, stage allowlist and PII remain fail closed; bounded retry still handles only true missing/count rules.
+- Raw DTO PII gate runs before normalization. API field descriptions and prompt document field ownership plus add increment vs set final quantity without changing model/strict schema.
+- `LLM_DEBUG_RESPONSE_JSON` is off by default, effective only in development/dev/local, and logs max-4000 parsed redacted DTO per attempt. Production is forced off; prompts/raw responses/user text/PII/secrets are excluded.
+- Tests: 31 context PASS; 113 expanded affected PASS; Ruff/compile/diff PASS. Live acceptance pending. Report: `history/034_M5_2_A2_1_dto_normalization_debug_report.md`. No commit/push.
+
+## M5.2-A2.2 multi-action handoff
+
+- OpenAI API contract теперь имеет backward-compatible single `kind=action` и отдельный flat `kind=actions` с ordered `operations`; bound schema остается strict-compatible, без API discriminated union/unsupported constraints. Multi-action domain scope: 2–8 операций `add`, `set_quantity`, `decrement`, `remove`; остальные actions остаются single.
+- `safe_extract()` возвращает `OrderActionPlan` только после validation каждой operation, raw DTO/output PII guards и current-stage allowlist. Existing bounded repair retry не расширен: только прежние fixed missing/count rules, максимум два LLM calls.
+- Dialog разрешает все items authoritative menu/MCP path до mutation. Pending ambiguity хранит весь plan и nested resolved IDs. Unknown/ambiguous/unavailable/limit/conflict result не идет в FAQ и не меняет cart. Cross-operation повтор одной dish отклоняется; unchanged/unmentioned dishes сохраняются.
+- Valid plan применяется ordered к local candidate cart и публикуется одним terminal graph update; single actions, A1 destructive confirmation, replay, FAQ, MCP contracts, DB schema, Telegram callback/UI и OpenAI model не изменены. Semantic history записывает `cart_batch` без raw text.
+- Persistence fault injection подтверждает old-or-complete terminal state, никогда промежуточную operation. Official LangGraph pending write может восстановить весь batch после final `aput` failure; strict rollback-to-old требует отдельной checkpointer transaction architecture и не входит в A2.2.
+- Verification: targeted 89 PASS; available host unit subset 161 PASS; Ruff/format/compile/diff PASS. Full suite collection blocked system Python 3.10/missing locked packages; Docker CLI по-прежнему blocked `snap-confine`. Live OpenAI/Telegram NOT RUN. Report/snapshot: `history/035_M5_2_A2_2_report.md` / `history/035_M5_2_A2_2_snapshot.zip`.
+- Manual next step after rebuild: prepare cart with salmon ×2, lemonade ×3, salad ×1; send «Лосося оставь одну порцию вместо двух, а лимонадов сделай четыре. Салат не трогай» once. Expect salmon ×1, lemonade ×4, salad ×1 and no FAQ fallback. Do not start M6 or commit/push automatically.
+
+## M5.2-A2.2 quantity validation handoff
+
+- Root cause: recognized `quantity_out_of_range` was diagnostic-only. Adapter still constructed bounded domain items, `ValidationError(less_than_equal)` escaped extractor, and `safe_extract()` returned unknown without clarification; graph selected unknown/FAQ fallback.
+- `api_result_to_outcome()` now returns typed backend `ValidationOutcome(quantity_out_of_range)` only when a parsed single/multi item explicitly exceeds 20. Raw DTO PII guard runs first. No API schema/prompt/model change and no retry.
+- `safe_extract()` maps that outcome to an order clarification with exact safe message. Because clarification is present, `OrderDialog.classify()` selects `order`; handle returns response/error only, so original cart/revision remain unchanged and MCP is not called.
+- Domain `ProposedItem.quantity ge=1/le=20` remains unchanged. Quantity 20 PASS; 21/25 return specific response. Below-minimum and unrelated Pydantic errors keep generic fail-closed behavior.
+- Verification: affected 94 PASS; available unit subset 166 PASS; Ruff/format/compile/diff PASS. Live retry pending. Report/snapshot: `history/036_M5_2_A2_2_quantity_validation_report.md` / `history/036_M5_2_A2_2_quantity_validation_snapshot.zip`. No commit/push.
+
+## M5.2-A2.2 acceptance closure / next increment handoff
+
+- Owner-confirmed live Telegram: Test 10 two `set_quantity` PASS, cart total 48,50 EUR; Test 11 `add+remove+add` with unknown Margherita PASS, cart unchanged; Test 12 `remove+add+set_quantity` with untouched lemonade PASS, cart total 96,00 EUR; Test 13 conflict on salmon PASS by bot response only, cart was not separately rechecked; Test 14 quantity >20 PASS after `ValidationOutcome`, cart unchanged and order-specific response.
+- A2.2 status is now **LIVE ACCEPTED**, including quantity validation closure. Do not infer additional live verification beyond the five statements above.
+- Overall M5 remains **IN PROGRESS**. M6 was not started. A3/A4/A5 were not started.
+- A2 design review: generic `pending_clarification` **NOT IMPLEMENTED**; previous dish referent **PARTIAL** (trusted public label/history, no backend referent ID/resolver); previous-order questions **PARTIAL** (snapshot facts/count only, no typed action/handler); checkout context **PARTIAL** (stage/expected input/contact preservation, no suspension/navigation context); FAQ/order state preservation **IMPLEMENTED for current text flow**; `expected_input` **PARTIAL** (stage-derived only).
+- Code/test evidence: `ClarifyOutcome` is immediately mapped to one-turn unknown clarification; `AgentState` has no pending clarification. `ContextBuilder` includes stage-derived expected input, bounded semantic history, last public dish label and confirmed snapshot facts. `test_retrospective_clarification_does_not_mutate_cart`, `test_contact_navigation_and_faq_never_reach_contextual_extractor`, `test_faq_during_checkout_preserves_order_state`, semantic-history/replay and new-order reset tests cover current boundaries. No regression exists for «этого блюда» or truthful previous-order response.
+- Recommended next increment: **M5.2-A2.3 Semantic Continuation Closure** before A3. Scope only typed pending clarification/continuation/reset, backend-only dish referent with safe LLM label, truthful checkpoint-bounded previous-order query and required regressions. Do not mix A3 catalog/UI, A4 summary/checkout suspension, A5 images or M6 persistence.
+- Dependency rationale: A3 will add `ui_view`/navigation context; A4 depends on it for checkout suspension and separately requires summary session variant B. Stable semantic continuation/referent state should be established first so clarification, catalog view and summary sessions remain independent from `draft_revision` and A1 `confirmation_id`.
+- Known persistence limit unchanged: final saver failure may recover old state or the entire terminal pending write, never a per-operation partial batch; guaranteed rollback-to-old requires separate checkpointer transaction architecture.
+- Documentation-only task: no application/tests/dependencies/schema changes; tests NOT RUN; `git diff --check` PASS. Report/snapshot: `history/037_M5_2_A2_2_acceptance_closure_report.md` / `history/037_M5_2_A2_2_acceptance_closure_snapshot.zip`. No commit/push.
+
+## M5.2-A2.3 semantic continuation handoff
+
+- Implemented typed optional `pending_clarification` in official checkpoint state. It contains only fixed reason, bounded allowlisted choices, return stage and 12-character session ID. `OrderContext.expected_input` becomes `clarification_choice`, and LLM actions are restricted to stored choices.
+- Mandatory «Заказ» continuation now supports Telegram buttons and free text. Callback reuses existing revision/session envelope and is protected by replay/stale checks. Topic switch/FAQ/cancel/new order clear semantic pending; A1 destructive confirmation remains higher priority.
+- Stable `last_referenced_dish_id` is backend-only and is set after catalog resolution. Details/allergens use fresh `get_dish`; missing referent asks for a dish name and then reuses existing dish ambiguity resolver.
+- `previous_order` handles the three agreed phrases deterministically and is also in the contextual action allowlist. It reports only confirmed checkpoint facts without contacts and explicitly denies knowledge of placement/preparation/delivery before M6.
+- No DB schema, dependencies, MCP contracts, OpenAI model, cart bounds, A1 confirmations or A2.2 atomic execution changes. A3/A4/A5/M6 not started; M5 remains IN PROGRESS.
+- Verification: changed-file Ruff PASS; affected unit/regression 118 PASS; compile PASS. Full host suite cannot collect under available Python 3.10/missing dependencies; project Python 3.12 venv symlink is broken. Docker, PostgreSQL/MCP integration, live OpenAI and Telegram NOT RUN.
+- Next: rebuild/fix Python 3.12 runtime, run full host suite, then one short live acceptance sequence for clarification callback/free text, referent, previous-order truthfulness and A1/A2.2 smoke. No commit/push.
+
+## M5.2-A2.3 deterministic checkout analysis handoff
+
+- Owner accepted a new boundary: every ordinary text update in `collecting_name/phone/address/time` and `collecting_edit_*` is only the expected field value. No contextual extractor, FAQ embeddings/answerer or other LLM call is permitted. Only allowlisted Telegram callbacks can control checkout.
+- Current root cause is code-confirmed: name validator accepts the all-letter continuation phrase; question heuristic then routes the next phone-stage question into FAQ; a later phrase fails phone validation. Existing tests explicitly require FAQ/navigation during checkout and must be reversed under ADR-024.
+- Current PII boundary is partly sound: `ContextBuilder` excludes contacts, raw state, responses/replay and snapshot bodies; semantic history stores only `contact_input`. But FAQ currently receives checkout questions, and checkpoint versions retain raw `user_message`, contacts and PII-bearing summary/replay responses. The latter is storage/retention, not an observed LLM path.
+- Minimal implementation plan: contact-stage routing gate before all text classifiers; empty contact-stage LLM allowlist; callback-only `cancel_checkout`; checkpointed checkout session ID reused in the existing four-part callback envelope; validate action + stage + revision + session; cancellation preserves cart, clears all unconfirmed contacts/quote, returns idle, and is distinct from destructive A1 cancel.
+- Existing phone/time validation, edit buttons/return-to-summary, explicit confirm, replay/per-thread locking, A1 barriers and A2.2 atomicity remain. Name/address validators need deterministic Unicode/control-character hardening only; no semantic name/address verification.
+- Conflicts to update at implementation: architecture contact guards, `M5_2_DESIGN_HANDOFF` FAQ/navigation checkout rows and acceptance #7, ADR-021 wording, plus old FAQ/navigation checkout tests. Do not start A3/A4/A5/M6.
+- Analysis evidence: 2 focused existing tests PASS; probe confirms the continuation phrase is currently accepted as name, free text rejected as phone, and newline currently collapsed into an address. No application/test/schema/dependency changes. Await owner approval of the plan before implementation; no commit/push.
+
+## M5.2-A2.3 deterministic checkout acceptance handoff
+
+**Статус:** **ACCEPTED (LIVE acceptance)**, 2026-11-19.
+
+- ADR-024 реализован. В `collecting_name/phone/address/time` и `collecting_edit_*` ordinary text рассматривается только как ожидаемое поле. Contact gate расположен до deterministic intent, pending continuation, FAQ и contextual extractor; contact-stage LLM allowlist пуст.
+- Новый checkout один раз показывает согласованное PII notice, затем existing sequence. Edit warning не повторяет. Unicode NFC validators поддерживают international names/addresses; phone ограничен ASCII 7–15 digits с optional leading `+`; semantic verification не выполняется.
+- Telegram показывает session-bound «Отменить оформление» на всех восьми contact stages; time buttons используют тот же checkout session. Cancel сохраняет cart, очищает contacts/quote/pending/session, возвращает idle и не вызывает A1 destructive cancellation.
+- `checkout_session_id` — optional 12-character JSON-safe checkpoint field. Callback validation требует current stage + revision + exact session; old/reentered/wrong-session callbacks stale, duplicate update replay-safe, current session переживает restart. Legacy checkpoint text flow совместим; legacy sessionless checkout callback fail safe.
+- PII не проецируется в `OrderContext`, semantic history, FAQ/embedding или subsequent LLM prompt. Regression с synthetic sentinels проверяет extractor context и logs. Official checkpoint historical versions все еще могут содержать raw turns/contacts/summary; retention/pruning зарегистрирован как отдельная privacy-задача.
+- Automated verification: changed-file Ruff PASS; affected unit/regression 166 PASS; compile PASS. Full test suite was not run in the Codex environment because the available Python 3.10 runtime and installed dependencies do not match the project runtime.
+- Owner-confirmed LIVE PASS: name/phone/address validation; deterministic text handling; notice; summary and name edit; cancellation with preserved cart; checkout re-entry; stale callback; restart recovery; cancel after recovery. All 29 observed diagnostic records had `llm_called=false` and `final_route=order`.
+- Acceptance limits: cancellation directly from contact edit mode was not separately verified; these diagnostic records do not prove absence of every possible external call; historical PostgreSQL checkpoint PII retention remains a separate production task.
+- No schema/MCP/model/dependency/topology/cart/A1/A2.2 changes. M5 remains IN PROGRESS; A3/A4/A5/M6 have not started. A2.3 is closed and the project is ready for separate planning of the next increment. No commit/push.

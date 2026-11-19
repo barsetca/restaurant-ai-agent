@@ -65,12 +65,14 @@ async def test_duplicate_and_out_of_order_updates_do_not_repeat_mutation() -> No
     assert state.values["draft_revision"] == 1
     assert state.values["highest_update_id"] == 100
     assert len(state.values["processed_updates"]) == 1
+    assert len(state.values["recent_interactions"]) == 1
 
     for update_id in range(101, 141):
         await service.handle_message("next", "thread", update_id=update_id)
     bounded = await graph.aget_state({"configurable": {"thread_id": "thread"}})
     assert len(bounded.values["processed_updates"]) == 32
     assert bounded.values["highest_update_id"] == 140
+    assert len(bounded.values["recent_interactions"]) == 10
 
 
 async def test_duplicate_confirm_new_order_update_clears_exactly_once() -> None:

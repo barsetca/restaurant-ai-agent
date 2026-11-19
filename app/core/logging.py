@@ -44,7 +44,11 @@ class SecretRedactor:
         # Avoid exact-match redaction of short/common values. Structured patterns
         # below still cover credentials in known header and URL forms.
         self._secrets = tuple(
-            sorted({value for value in secrets if value and len(value) >= 8}, key=len, reverse=True)
+            sorted(
+                {value for value in secrets if value and len(value) >= 8},
+                key=len,
+                reverse=True,
+            )
         )
 
     def redact_text(self, value: str) -> str:
@@ -128,7 +132,32 @@ class JsonFormatter(logging.Formatter):
         elif record.exc_text:
             payload["exception"] = record.exc_text
 
-        for field in ("http_method", "endpoint", "status_code", "duration_ms", "exception_type"):
+        for field in (
+            "http_method",
+            "endpoint",
+            "status_code",
+            "duration_ms",
+            "exception_type",
+            "llm_called",
+            "llm_result",
+            "llm_error",
+            "llm_http_status",
+            "llm_api_code",
+            "llm_api_type",
+            "llm_api_param",
+            "llm_validation_errors",
+            "kind",
+            "action",
+            "items_count",
+            "operations_count",
+            "quantity_present",
+            "quantity_valid",
+            "validation_rule",
+            "llm_attempt",
+            "llm_response_json",
+            "final_route",
+            "fallback_reason",
+        ):
             value = getattr(record, field, None)
             if value is not None:
                 payload[field] = _active_redactor.redact_value(value)

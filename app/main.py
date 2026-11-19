@@ -58,6 +58,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         app_settings.openai_api_key,
                         app_settings.openai_chat_model,
                         app_settings.faq_request_timeout_seconds,
+                        debug_response_json=(
+                            app_settings.llm_debug_response_json_enabled
+                        ),
                     )
                     if app_settings.openai_api_key
                     else None

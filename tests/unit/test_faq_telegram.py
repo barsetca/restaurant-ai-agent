@@ -22,12 +22,14 @@ def _agent_service(
     stage: str | None = None,
     revision: int | None = None,
     confirmation_id: str | None = None,
+    checkout_session_id: str | None = None,
 ) -> tuple[AgentService, AsyncMock]:
     graph = AsyncMock()
     graph.ainvoke.return_value = {
         "response": response,
         "order_stage": stage,
         "draft_revision": revision,
+        "checkout_session_id": checkout_session_id,
         "pending_destructive_action": (
             {"confirmation_id": confirmation_id} if confirmation_id is not None else None
         ),
@@ -108,7 +110,9 @@ async def test_delivery_time_callback_is_forwarded_to_same_agent_thread() -> Non
     service, graph = _agent_service("Введите дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ.")
     callback_message = SimpleNamespace(reply_text=AsyncMock())
     query = SimpleNamespace(
-        data="order:time_manual:4", message=callback_message, answer=AsyncMock()
+        data="order:time_manual:4:session00001",
+        message=callback_message,
+        answer=AsyncMock(),
     )
     update = SimpleNamespace(
         callback_query=query,
@@ -130,6 +134,10 @@ async def test_delivery_time_callback_is_forwarded_to_same_agent_thread() -> Non
     assert graph.ainvoke.await_args.args[0]["user_message"] == "Выбрать дату и время"
     assert graph.ainvoke.await_args.args[0]["callback_action"] == "time_manual"
     assert graph.ainvoke.await_args.args[0]["callback_revision"] == 4
+    assert (
+        graph.ainvoke.await_args.args[0]["callback_confirmation_id"]
+        == "session00001"
+    )
     callback_message.reply_text.assert_awaited_once()
 
 
@@ -138,6 +146,7 @@ async def test_time_prompt_adds_two_inline_buttons() -> None:
         "Выберите время доставки: «Как можно скорее» или «Выбрать дату и время».",
         stage="collecting_time",
         revision=3,
+        checkout_session_id="session00001",
     )
     message = SimpleNamespace(text="адрес", chat_id=111, reply_text=AsyncMock())
     update = SimpleNamespace(
@@ -158,6 +167,13 @@ async def test_time_prompt_adds_two_inline_buttons() -> None:
         "Как можно скорее",
         "Выбрать дату и время",
     ]
+    assert [button.text for button in markup.inline_keyboard[1]] == [
+        "Отменить оформление"
+    ]
+    assert markup.inline_keyboard[0][0].callback_data.endswith(":session00001")
+    assert markup.inline_keyboard[1][0].callback_data == (
+        "order:cancel_checkout:3:session00001"
+    )
 
 
 async def test_confirmation_summary_adds_revision_bound_actions() -> None:

@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import re
+import unicodedata
 from secrets import token_urlsafe
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
@@ -14,19 +15,34 @@ from zoneinfo import ZoneInfo
 from pydantic import ValidationError
 
 from app.menu.contracts import CartItemInput, CartQuote, DishDetail, MenuSearchResult
-from app.orders.cart import CartOperationError, add_items, decrement, remove_item, set_quantity
+from app.orders.cart import (
+    CartOperationError,
+    add_items,
+    decrement,
+    remove_item,
+    set_quantity,
+)
+from app.orders.context import ContextBuilder, ContextSource
 from app.orders.contracts import (
     CartStateItem,
     ConfirmedOrder,
     ContactData,
+    OrderActionPlan,
     OrderIntentProposal,
+    PendingClarification,
+    PendingActionPlan,
     PendingAction,
     PendingBatch,
     PendingCandidate,
     PendingDestructiveAction,
     QuoteSnapshot,
 )
-from app.orders.intent import OrderIntentExtractor, deterministic_intent, safe_extract
+from app.orders.intent import (
+    OrderIntentExtractor,
+    contains_obvious_sensitive_data,
+    deterministic_intent,
+    safe_extract,
+)
 from app.orders.settings import OrderSettingsError, OrderSettingsRepository
 
 logger = logging.getLogger(__name__)
@@ -34,6 +50,12 @@ logger = logging.getLogger(__name__)
 MADRID = ZoneInfo("Europe/Madrid")
 SAFE_ORDER_ERROR = "Не удалось обработать заказ. Попробуйте еще раз."
 CONFIRMED_MESSAGE = "Данные заказа подтверждены. Заказ еще не размещен."
+CHECKOUT_NOTICE = (
+    "Переходим к оформлению заказа.\n\n"
+    "Сейчас я попрошу вас указать имя, телефон, адрес и время доставки.\n\n"
+    "Не переживайте, если допустите ошибку: перед подтверждением заказа "
+    "вы сможете проверить и изменить все введенные данные."
+)
 MAX_CONFIRMED_SNAPSHOTS = 5
 FUZZY_MATCH_THRESHOLD = 0.86
 FUZZY_SEPARATION_MARGIN = 0.08
@@ -52,10 +74,26 @@ _CALLBACK_ACTIONS = {
     "cancel_back": "cancel_back",
     "time_asap": "time_asap",
     "time_manual": "time_manual",
+    "cancel_checkout": "cancel_checkout",
     "confirm_new_order": "confirm_new_order",
     "confirm_clear": "confirm_clear",
     "keep_current_order": "keep_current_order",
+    "clarify_view_cart": "clarify_view_cart",
+    "clarify_checkout": "clarify_checkout",
 }
+
+_CLARIFICATION_CALLBACK_ACTIONS = {"clarify_view_cart", "clarify_checkout"}
+_CONTACT_STAGES = {
+    "collecting_name",
+    "collecting_phone",
+    "collecting_address",
+    "collecting_time",
+    "collecting_edit_name",
+    "collecting_edit_phone",
+    "collecting_edit_address",
+    "collecting_edit_time",
+}
+_CHECKOUT_CALLBACK_ACTIONS = {"time_asap", "time_manual", "cancel_checkout"}
 
 _CALLBACK_STAGES = {
     "confirm": {"awaiting_confirmation"},
@@ -71,6 +109,7 @@ _CALLBACK_STAGES = {
     "cancel_back": {"awaiting_cancel_confirmation"},
     "time_asap": {"collecting_time", "collecting_edit_time"},
     "time_manual": {"collecting_time", "collecting_edit_time"},
+    "cancel_checkout": _CONTACT_STAGES,
     "confirm_new_order": {"awaiting_new_order_confirmation"},
     "confirm_clear": {"awaiting_clear_confirmation"},
     "keep_current_order": {
@@ -142,11 +181,16 @@ def _looks_like_faq(message: str) -> bool:
     normalized = message.casefold()
     explicit_question = any(
         phrase in normalized
-        for phrase in ("до скольких", "когда вы", "во сколько", "вы работаете", "есть ли доставка")
+        for phrase in (
+            "до скольких",
+            "когда вы",
+            "во сколько",
+            "вы работаете",
+            "есть ли доставка",
+        )
     )
     return explicit_question or (
-        "?" in message
-        and any(word in normalized for word in ("работ", "откры", "ресторан", "достав", "можно ли"))
+        "?" in message and any(character.isalpha() for character in normalized)
     )
 
 
@@ -182,7 +226,9 @@ def _quote_fingerprint(quote: CartQuote, delivery_fee: int, revision: int) -> st
         "currency": quote.currency,
         "draft_revision": revision,
     }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
@@ -202,35 +248,97 @@ def _format_summary(snapshot: QuoteSnapshot, contacts: ContactData) -> str:
             f"Телефон: {contacts.phone}",
             f"Адрес: {contacts.address}",
             f"Время: {requested}",
-            'Для подтверждения отправьте ровно: «Подтверждаю».',
+            "Для подтверждения отправьте ровно: «Подтверждаю».",
         ]
     )
     return "\n".join(lines)
 
 
 def _validate_name(value: str) -> str | None:
-    cleaned = " ".join(value.strip().split())
-    valid_characters = all(char.isalpha() or char in " -'’" for char in cleaned)
-    return cleaned if 2 <= len(cleaned) <= 100 and valid_characters else None
+    normalized = unicodedata.normalize("NFC", value)
+    if any(
+        unicodedata.category(char).startswith("C")
+        or unicodedata.category(char) in {"Zl", "Zp"}
+        for char in normalized
+    ):
+        return None
+    normalized = "".join(
+        " " if unicodedata.category(char) == "Zs" else char
+        for char in normalized
+    )
+    normalized = normalized.translate(str.maketrans("‐‑‒–", "----"))
+    cleaned = " ".join(normalized.strip().split())
+    if not 2 <= len(cleaned) <= 100:
+        return None
+    separators = {" ", "-", "'", "’", "·"}
+    letters = 0
+    previous_was_separator = True
+    previous_was_letter_or_mark = False
+    for char in cleaned:
+        category = unicodedata.category(char)
+        if category.startswith("L"):
+            letters += 1
+            previous_was_separator = False
+            previous_was_letter_or_mark = True
+        elif category.startswith("M") and previous_was_letter_or_mark:
+            previous_was_separator = False
+            previous_was_letter_or_mark = True
+        elif char in separators and not previous_was_separator:
+            previous_was_separator = True
+            previous_was_letter_or_mark = False
+        else:
+            return None
+    return cleaned if letters >= 2 and not previous_was_separator else None
 
 
 def _validate_phone(value: str) -> str | None:
+    if any(
+        unicodedata.category(char).startswith("C")
+        or unicodedata.category(char) in {"Zl", "Zp"}
+        for char in value
+    ):
+        return None
     cleaned = re.sub(r"[\s()\-]", "", value.strip())
-    if not re.fullmatch(r"\+?\d{7,15}", cleaned):
+    if not re.fullmatch(r"\+?[0-9]{7,15}", cleaned):
         return None
     return cleaned
 
 
 def _validate_address(value: str) -> str | None:
-    cleaned = " ".join(value.strip().split())
-    return cleaned if 5 <= len(cleaned) <= 300 and any(char.isalnum() for char in cleaned) else None
+    normalized = unicodedata.normalize("NFC", value)
+    if any(
+        unicodedata.category(char).startswith("C")
+        or unicodedata.category(char) in {"Zl", "Zp"}
+        for char in normalized
+    ):
+        return None
+    normalized = "".join(
+        " " if unicodedata.category(char) == "Zs" else char
+        for char in normalized
+    )
+    cleaned = " ".join(normalized.strip().split())
+    if not 5 <= len(cleaned) <= 300:
+        return None
+    punctuation = {" ", ".", ",", "'", "’", "-", "/", "№", "#", "(", ")"}
+    has_letter = False
+    for char in cleaned:
+        category = unicodedata.category(char)
+        if category.startswith("L"):
+            has_letter = True
+        elif category.startswith(("M", "N")) or char in punctuation:
+            continue
+        else:
+            return None
+    return cleaned if has_letter else None
 
 
 def _parse_requested_at(value: str, now: datetime) -> tuple[bool, str | None]:
     normalized = " ".join(value.casefold().strip().split())
     if normalized in {"как можно скорее", "как можно быстрей", "asap", "скорее"}:
         return True, None
-    if any(word in normalized for word in ("утром", "днем", "днём", "вечером", "ночью")):
+    if any(
+        word in normalized for word in ("утром", "днем", "днём", "вечером", "ночью")
+    ):
         return False, None
     if not re.fullmatch(r"\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}", normalized):
         return False, None
@@ -250,10 +358,14 @@ def _empty_draft_changes(state: dict[str, Any]) -> dict[str, Any]:
         "quote_snapshot": None,
         "pending_action": None,
         "pending_destructive_action": None,
+        "pending_clarification": None,
+        "checkout_session_id": None,
         "pending_batch": None,
         "candidates": [],
         "draft_revision": int(state.get("draft_revision", 0)) + 1,
         "order_stage": "idle",
+        "last_referenced_dish_id": None,
+        "last_referenced_dish_name": None,
     }
 
 
@@ -275,6 +387,60 @@ def _confirmation_text_intent(value: str) -> str | None:
 def _has_active_draft(state: dict[str, Any]) -> bool:
     return bool(_cart_from_state(state)) and not (
         state.get("order_stage") == "confirmed" and state.get("confirmed_order")
+    )
+
+
+def _context_source(state: dict[str, Any]) -> ContextSource:
+    cart = state.get("cart")
+    quantities = (
+        tuple(item.get("quantity") for item in cart if isinstance(item, dict))
+        if isinstance(cart, list)
+        else ()
+    )
+    archive = state.get("confirmed_order_archive")
+    archive_count = len(archive) if isinstance(archive, list) else 0
+    has_current = isinstance(state.get("confirmed_order"), dict)
+    pending_actions: tuple[object, ...] = ()
+    try:
+        pending = PendingClarification.model_validate(state.get("pending_clarification"))
+        pending_actions = tuple(choice.action for choice in pending.choices)
+    except ValidationError:
+        pass
+    return ContextSource(
+        order_stage=state.get("order_stage", "idle"),
+        cart_quantities=quantities,
+        recent_interactions=state.get("recent_interactions", []),
+        last_action=state.get("last_action"),
+        last_referenced_dish_name=state.get("last_referenced_dish_name"),
+        has_confirmed_snapshot=has_current,
+        confirmed_snapshot_count=archive_count + (1 if has_current else 0),
+        pending_allowed_actions=pending_actions,
+    )
+
+
+def _pending_clarification(state: dict[str, Any]) -> PendingClarification | None:
+    try:
+        return PendingClarification.model_validate(state.get("pending_clarification"))
+    except ValidationError:
+        return None
+
+
+def _new_pending_clarification(
+    reason: str, stage: str
+) -> PendingClarification:
+    choices = (
+        [
+            {"action": "view_cart", "label": "Показать корзину"},
+            {"action": "checkout", "label": "Перейти к оформлению"},
+        ]
+        if reason == "order_intent"
+        else [{"action": "dish_info", "label": "Указать блюдо"}]
+    )
+    return PendingClarification(
+        reason=reason,
+        choices=choices,
+        return_stage=stage,
+        clarification_id=token_urlsafe(9),
     )
 
 
@@ -306,78 +472,232 @@ class OrderDialog:
         self._menu_factory = menu_factory
         self._settings = settings_repository
         self._intent_extractor = intent_extractor
+        self._context_builder = ContextBuilder()
         self._now = now or (lambda: datetime.now(MADRID))
 
-    async def classify(self, state: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+    async def classify(
+        self, state: dict[str, Any]
+    ) -> tuple[str, dict[str, Any] | None]:
+        def classified(
+            route: str,
+            proposal: dict[str, Any] | None,
+            *,
+            llm_called: bool,
+        ) -> tuple[str, dict[str, Any] | None]:
+            logger.info(
+                "Order routing diagnostic",
+                extra={"llm_called": llm_called, "final_route": route},
+            )
+            return route, proposal
+
         message = state.get("user_message", "")
         stage = state.get("order_stage", "idle")
         callback_action = state.get("callback_action")
         if callback_action is not None:
             action = _CALLBACK_ACTIONS.get(callback_action, "unknown")
-            return "order", OrderIntentProposal(action=action).model_dump(mode="json")
+            return classified(
+                "order",
+                OrderIntentProposal(action=action).model_dump(mode="json"),
+                llm_called=False,
+            )
+        if stage in _CONTACT_STAGES:
+            return classified("order", None, llm_called=False)
         if stage == "awaiting_confirmation":
             confirmation_action = _confirmation_text_intent(message)
             if confirmation_action is not None:
-                return "order", OrderIntentProposal(action=confirmation_action).model_dump(mode="json")
+                return classified(
+                    "order",
+                    OrderIntentProposal(action=confirmation_action).model_dump(
+                        mode="json"
+                    ),
+                    llm_called=False,
+                )
         if stage == "awaiting_new_order_confirmation":
-            return "order", OrderIntentProposal(
-                action="unknown",
-                confidence="low",
-                clarification=(
-                    "Выберите: начать новый заказ или оставить текущий. "
-                    "Корзина пока не изменена."
-                ),
-            ).model_dump(mode="json")
+            return classified(
+                "order",
+                OrderIntentProposal(
+                    action="unknown",
+                    confidence="low",
+                    clarification=(
+                        "Выберите: начать новый заказ или оставить текущий. "
+                        "Корзина пока не изменена."
+                    ),
+                ).model_dump(mode="json"),
+                llm_called=False,
+            )
         if stage == "awaiting_clear_confirmation":
-            return "order", OrderIntentProposal(
-                action="unknown",
-                confidence="low",
-                clarification=(
-                    "Выберите: очистить корзину или оставить текущий заказ. "
-                    "Корзина пока не изменена."
-                ),
-            ).model_dump(mode="json")
+            return classified(
+                "order",
+                OrderIntentProposal(
+                    action="unknown",
+                    confidence="low",
+                    clarification=(
+                        "Выберите: очистить корзину или оставить текущий заказ. "
+                        "Корзина пока не изменена."
+                    ),
+                ).model_dump(mode="json"),
+                llm_called=False,
+            )
         if stage == "awaiting_cancel_confirmation":
-            return "order", OrderIntentProposal(
-                action="unknown",
-                confidence="low",
-                clarification=(
-                    "Выберите: отменить оформление или вернуться. "
-                    "Текущий черновик пока не изменен."
-                ),
-            ).model_dump(mode="json")
+            return classified(
+                "order",
+                OrderIntentProposal(
+                    action="unknown",
+                    confidence="low",
+                    clarification=(
+                        "Выберите: отменить оформление или вернуться. "
+                        "Текущий черновик пока не изменен."
+                    ),
+                ).model_dump(mode="json"),
+                llm_called=False,
+            )
+        pending = _pending_clarification(state)
+        if pending is not None:
+            normalized_pending_answer = _normalized_action_text(message)
+            if pending.reason == "order_intent":
+                resolved_action = None
+                if normalized_pending_answer in {
+                    "корзина",
+                    "показать корзину",
+                    "покажи корзину",
+                    "текущая корзина",
+                }:
+                    resolved_action = "view_cart"
+                elif normalized_pending_answer in {
+                    "оформление",
+                    "оформить",
+                    "перейти к оформлению",
+                    "оформить заказ",
+                }:
+                    resolved_action = "checkout"
+                if resolved_action is not None:
+                    return classified(
+                        "order",
+                        OrderIntentProposal(action=resolved_action).model_dump(
+                            mode="json"
+                        ),
+                        llm_called=False,
+                    )
+            guarded = deterministic_intent(message)
+            if guarded is not None and not (
+                guarded.action == "unknown" and guarded.clarification
+            ):
+                return classified(
+                    "order",
+                    guarded.model_dump(mode="json"),
+                    llm_called=False,
+                )
+            if _looks_like_faq(message) and not contains_obvious_sensitive_data(message):
+                return classified("faq", None, llm_called=False)
+            if pending.reason == "dish_referent":
+                if contains_obvious_sensitive_data(message) or not message.strip():
+                    return classified(
+                        "order",
+                        OrderIntentProposal(
+                            action="unknown",
+                            confidence="low",
+                            clarification="Укажите название блюда без контактных данных.",
+                        ).model_dump(mode="json"),
+                        llm_called=False,
+                    )
+                return classified(
+                    "order",
+                    OrderIntentProposal(
+                        action="dish_info",
+                        items=[{"name": message[:200]}],
+                    ).model_dump(mode="json"),
+                    llm_called=False,
+                )
+            context = self._context_builder.build(_context_source(state))
+            llm_called = (
+                self._intent_extractor is not None
+                and not contains_obvious_sensitive_data(message)
+            )
+            continuation = await safe_extract(self._intent_extractor, message, context)
+            if isinstance(continuation, OrderActionPlan):
+                continuation = OrderIntentProposal(
+                    action="unknown",
+                    confidence="low",
+                    clarification=(
+                        "Выберите: показать текущую корзину или перейти к оформлению."
+                    ),
+                )
+            if continuation.action == "unknown" and not continuation.clarification:
+                continuation = OrderIntentProposal(
+                    action="unknown",
+                    confidence="low",
+                    clarification=(
+                        "Выберите: показать текущую корзину или перейти к оформлению."
+                    ),
+                )
+            return classified(
+                "order",
+                continuation.model_dump(mode="json"),
+                llm_called=llm_called,
+            )
         guarded = deterministic_intent(message)
         if guarded is not None:
-            return "order", guarded.model_dump(mode="json")
-        if stage in {
-            "collecting_name",
-            "collecting_phone",
-            "collecting_address",
-            "collecting_time",
-            "collecting_edit_name",
-            "collecting_edit_phone",
-            "collecting_edit_address",
-            "collecting_edit_time",
-        }:
-            if _looks_like_faq(message):
-                return "faq", None
-            return "order", None
+            return classified(
+                "order",
+                guarded.model_dump(mode="json"),
+                llm_called=False,
+            )
         if stage == "awaiting_disambiguation" and message.strip().isdigit():
-            return "order", None
-        proposal = await safe_extract(self._intent_extractor, message)
+            return classified("order", None, llm_called=False)
+        context = self._context_builder.build(_context_source(state))
+        llm_called = (
+            self._intent_extractor is not None
+            and not contains_obvious_sensitive_data(message)
+        )
+        proposal = await safe_extract(self._intent_extractor, message, context)
+        if isinstance(proposal, OrderActionPlan):
+            return classified(
+                "order",
+                proposal.model_dump(mode="json"),
+                llm_called=llm_called,
+            )
         if proposal.action == "faq":
-            return "faq", proposal.model_dump(mode="json")
+            return classified(
+                "faq",
+                proposal.model_dump(mode="json"),
+                llm_called=llm_called,
+            )
         if proposal.action == "unknown":
             if proposal.clarification:
-                return "order", proposal.model_dump(mode="json")
-            return "unknown", proposal.model_dump(mode="json")
-        return "order", proposal.model_dump(mode="json")
+                return classified(
+                    "order",
+                    proposal.model_dump(mode="json"),
+                    llm_called=llm_called,
+                )
+            return classified(
+                "unknown",
+                proposal.model_dump(mode="json"),
+                llm_called=llm_called,
+            )
+        return classified(
+            "order",
+            proposal.model_dump(mode="json"),
+            llm_called=llm_called,
+        )
 
     async def handle(self, state: dict[str, Any]) -> dict[str, Any]:
         try:
-            return await self._handle(state)
+            changes = await self._handle(state)
+            next_stage = changes.get("order_stage", state.get("order_stage", "idle"))
+            if next_stage in _CONTACT_STAGES and not changes.get("checkout_session_id"):
+                current_session = state.get("checkout_session_id")
+                changes["checkout_session_id"] = (
+                    current_session
+                    if isinstance(current_session, str)
+                    and re.fullmatch(r"[A-Za-z0-9_-]{12}", current_session)
+                    else token_urlsafe(9)
+                )
+            return changes
         except OrderSettingsError as exc:
-            return {"response": exc.public_message, "error_code": "order_settings_unavailable"}
+            return {
+                "response": exc.public_message,
+                "error_code": "order_settings_unavailable",
+            }
         except CartOperationError as exc:
             return {"response": str(exc), "error_code": "cart_validation"}
         except Exception as exc:
@@ -393,22 +713,68 @@ class OrderDialog:
         if callback_error is not None:
             return callback_error
         proposal_data = state.get("action_proposal")
+        plan = (
+            OrderActionPlan.model_validate(proposal_data)
+            if isinstance(proposal_data, dict) and "operations" in proposal_data
+            else None
+        )
         proposal = (
             OrderIntentProposal.model_validate(proposal_data)
-            if proposal_data
+            if proposal_data and plan is None
             else OrderIntentProposal(action="unknown", confidence="low")
         )
+        if (
+            proposal.action == "unknown"
+            and proposal.clarification
+            == "Уточните: показать текущую корзину или перейти к оформлению?"
+            and _cart_from_state(state)
+        ):
+            pending = _new_pending_clarification("order_intent", stage)
+            return {
+                "pending_clarification": pending.model_dump(mode="json"),
+                "response": proposal.clarification,
+                "error_code": "order_clarification",
+            }
         contact_guards = {
-            "start", "new_order", "cancel", "clear", "view_cart", "browse_menu", "search_menu"
+            "start",
+            "new_order",
+            "cancel",
+            "clear",
+            "view_cart",
+            "browse_menu",
+            "search_menu",
+            "referenced_dish_info",
+            "previous_order",
+            "clarify_view_cart",
+            "clarify_checkout",
+            "cancel_checkout",
         }
         if stage.startswith("collecting_") and proposal.action not in contact_guards:
+            if plan is not None:
+                return {
+                    "response": ("Сначала завершите ввод данных. Корзина не изменена."),
+                    "error_code": "batch_action_not_allowed",
+                }
             return await self._handle_contact(state)
-        if stage == "awaiting_disambiguation" and state.get("user_message", "").strip().isdigit():
+        if (
+            stage == "awaiting_disambiguation"
+            and state.get("user_message", "").strip().isdigit()
+        ):
             return await self._handle_candidate_choice(state)
 
         action = proposal.action
         if action == "start":
             return self._start_response(state)
+        if action in _CLARIFICATION_CALLBACK_ACTIONS:
+            return await self._resolve_clarification_callback(state, action)
+        if action == "cancel_checkout":
+            return self._cancel_checkout(state)
+        if action == "referenced_dish_info":
+            return await self._show_referenced_dish(state)
+        if action == "previous_order":
+            result = self._show_previous_order(state)
+            result.update(last_referenced_dish_id=None, last_referenced_dish_name=None)
+            return result
         if action == "new_order":
             if _has_active_draft(state):
                 return self._request_destructive_confirmation(
@@ -427,10 +793,11 @@ class OrderDialog:
         if (
             action == "confirm"
             and state.get("callback_action") != "confirm"
-            and state.get("user_message", "").casefold().strip() not in {"подтверждаю", "подтвердить"}
+            and state.get("user_message", "").casefold().strip()
+            not in {"подтверждаю", "подтвердить"}
         ):
             return {
-                "response": 'Для явного подтверждения отправьте ровно: «Подтверждаю».',
+                "response": "Для явного подтверждения отправьте ровно: «Подтверждаю».",
                 "error_code": "explicit_confirmation_required",
             }
         if state.get("order_stage") == "confirmed" and state.get("confirmed_order"):
@@ -441,20 +808,33 @@ class OrderDialog:
                     "response": "Подтвержденный заказ сохранен. Активного черновика для отмены нет.",
                     "error_code": None,
                 }
-            return {
-                "response": "Подтвержденный заказ сохранен. Чтобы продолжить, выберите «Новый заказ».",
-                "error_code": "confirmed_order_immutable",
-            }
+            if action not in {"browse_menu", "search_menu", "dish_info", "view_cart"}:
+                return {
+                    "response": "Подтвержденный заказ сохранен. Чтобы продолжить, выберите «Новый заказ».",
+                    "error_code": "confirmed_order_immutable",
+                }
+        if plan is not None:
+            return await self._execute_action_plan(state, plan)
         if action == "unknown":
-            return {
+            changes = {
                 "response": proposal.clarification
                 or "Уточните, пожалуйста, что вы хотите сделать с меню или корзиной.",
                 "error_code": "order_clarification",
             }
+            if _pending_clarification(state) is not None:
+                changes["pending_clarification"] = state["pending_clarification"]
+            return changes
         if action == "browse_menu" or action == "search_menu":
             async with self._menu_factory() as menu:
-                result = await menu.search_menu(proposal.query, proposal.category, proposal.dietary_tags)
-            return {"response": _format_menu(result), "error_code": None}
+                result = await menu.search_menu(
+                    proposal.query, proposal.category, proposal.dietary_tags
+                )
+            return {
+                "response": _format_menu(result),
+                "error_code": None,
+                "last_referenced_dish_id": None,
+                "last_referenced_dish_name": None,
+            }
         if action == "clear":
             if _has_active_draft(state):
                 return self._request_destructive_confirmation(
@@ -475,7 +855,8 @@ class OrderDialog:
             changes = _empty_draft_changes(state)
             changes.update(
                 confirmed_order=state.get("confirmed_order"),
-                response="Оформление отменено, черновик очищен.", error_code=None,
+                response="Оформление отменено, черновик очищен.",
+                error_code=None,
             )
             return changes
         if action == "edit":
@@ -493,15 +874,26 @@ class OrderDialog:
         if action in {"edit_name", "edit_phone", "edit_address", "edit_time"}:
             prompts = {
                 "edit_name": ("collecting_edit_name", "Укажите новое имя получателя."),
-                "edit_phone": ("collecting_edit_phone", "Укажите новый номер телефона."),
-                "edit_address": ("collecting_edit_address", "Укажите новый адрес доставки."),
+                "edit_phone": (
+                    "collecting_edit_phone",
+                    "Укажите новый номер телефона.",
+                ),
+                "edit_address": (
+                    "collecting_edit_address",
+                    "Укажите новый адрес доставки.",
+                ),
                 "edit_time": (
                     "collecting_edit_time",
                     "Выберите время доставки: «Как можно скорее» или «Выбрать дату и время».",
                 ),
             }
             next_stage, prompt = prompts[action]
-            return {"order_stage": next_stage, "response": prompt, "error_code": None}
+            return {
+                "order_stage": next_stage,
+                "checkout_session_id": token_urlsafe(9),
+                "response": prompt,
+                "error_code": None,
+            }
         if action == "return_summary":
             if not _cart_from_state(state):
                 return {
@@ -560,24 +952,39 @@ class OrderDialog:
             }
         if action == "checkout":
             if not _cart_from_state(state):
-                return {"response": "Корзина пуста. Сначала добавьте блюда.", "error_code": "empty_cart"}
+                return {
+                    "response": "Корзина пуста. Сначала добавьте блюда.",
+                    "error_code": "empty_cart",
+                }
             contacts = _contacts_from_state(state)
             next_stage, prompt = self._next_contact_prompt(contacts)
             if next_stage is None:
                 return await self._prepare_quote(state, contacts)
-            return {"order_stage": next_stage, "response": prompt, "error_code": None}
+            return {
+                "order_stage": next_stage,
+                "checkout_session_id": token_urlsafe(9),
+                "response": f"{CHECKOUT_NOTICE}\n\n{prompt}",
+                "error_code": None,
+            }
         if action == "view_cart":
             cart = _cart_from_state(state)
             if not cart:
                 return {"response": "Корзина пуста.", "error_code": None}
             async with self._menu_factory() as menu:
                 quote = await menu.calculate_cart(
-                    [CartItemInput(dish_id=item.dish_id, quantity=item.quantity) for item in cart]
+                    [
+                        CartItemInput(dish_id=item.dish_id, quantity=item.quantity)
+                        for item in cart
+                    ]
                 )
-            lines = ["Корзина:"] + [
-                f"• {_display_name(line.name)} × {line.quantity} — {_money(line.line_total_minor)}"
-                for line in quote.items
-            ] + [f"Сумма блюд: {_money(quote.subtotal_minor)}"]
+            lines = (
+                ["Корзина:"]
+                + [
+                    f"• {_display_name(line.name)} × {line.quantity} — {_money(line.line_total_minor)}"
+                    for line in quote.items
+                ]
+                + [f"Сумма блюд: {_money(quote.subtotal_minor)}"]
+            )
             return {"response": "\n".join(lines), "error_code": None}
         if action == "confirm":
             return await self._confirm(state)
@@ -590,6 +997,31 @@ class OrderDialog:
         action = state.get("callback_action")
         if action is None:
             return None
+        if action in _CLARIFICATION_CALLBACK_ACTIONS:
+            try:
+                pending = PendingClarification.model_validate(
+                    state.get("pending_clarification")
+                )
+            except ValidationError:
+                return {
+                    "response": "Эта кнопка устарела. Используйте действия из последнего сообщения.",
+                    "error_code": "stale_callback",
+                }
+            expected_action = {
+                "clarify_view_cart": "view_cart",
+                "clarify_checkout": "checkout",
+            }[action]
+            allowed = {choice.action for choice in pending.choices}
+            if (
+                state.get("callback_revision") != int(state.get("draft_revision", 0))
+                or state.get("callback_confirmation_id") != pending.clarification_id
+                or expected_action not in allowed
+            ):
+                return {
+                    "response": "Эта кнопка устарела. Используйте действия из последнего сообщения.",
+                    "error_code": "stale_callback",
+                }
+            return None
         if action not in _CALLBACK_STAGES:
             return {
                 "response": "Эта кнопка не поддерживается.",
@@ -597,7 +1029,10 @@ class OrderDialog:
             }
         expected_revision = state.get("callback_revision")
         current_revision = int(state.get("draft_revision", 0))
-        if expected_revision != current_revision or state.get("order_stage", "idle") not in _CALLBACK_STAGES[action]:
+        if (
+            expected_revision != current_revision
+            or state.get("order_stage", "idle") not in _CALLBACK_STAGES[action]
+        ):
             return {
                 "response": "Эта кнопка устарела. Используйте действия из последнего сообщения.",
                 "error_code": "stale_callback",
@@ -617,7 +1052,112 @@ class OrderDialog:
                     "response": "Эта кнопка устарела. Используйте действия из последнего сообщения.",
                     "error_code": "stale_callback",
                 }
+        if action in _CHECKOUT_CALLBACK_ACTIONS:
+            checkout_session_id = state.get("checkout_session_id")
+            if (
+                not isinstance(checkout_session_id, str)
+                or state.get("callback_confirmation_id") != checkout_session_id
+            ):
+                return {
+                    "response": "Эта кнопка устарела. Используйте действия из последнего сообщения.",
+                    "error_code": "stale_callback",
+                }
         return None
+
+    @staticmethod
+    def _cancel_checkout(state: dict[str, Any]) -> dict[str, Any]:
+        contacts = _contacts_from_state(state)
+        has_contact_data = any(
+            value is not None
+            for value in (
+                contacts.customer_name,
+                contacts.phone,
+                contacts.address,
+                contacts.requested_at,
+            )
+        )
+        changes = (
+            _invalidated(state)
+            if has_contact_data or state.get("quote_snapshot") is not None
+            else {}
+        )
+        changes.update(
+            contacts={},
+            quote_snapshot=None,
+            pending_clarification=None,
+            checkout_session_id=None,
+            order_stage="idle",
+            response="Оформление отменено. Корзина сохранена.",
+            error_code=None,
+        )
+        return changes
+
+    async def _resolve_clarification_callback(
+        self, state: dict[str, Any], action: str
+    ) -> dict[str, Any]:
+        resolved = "view_cart" if action == "clarify_view_cart" else "checkout"
+        continued = dict(state)
+        continued["callback_action"] = None
+        continued["action_proposal"] = OrderIntentProposal(action=resolved).model_dump(
+            mode="json"
+        )
+        continued["pending_clarification"] = None
+        result = await self._handle(continued)
+        result["pending_clarification"] = None
+        return result
+
+    async def _show_referenced_dish(self, state: dict[str, Any]) -> dict[str, Any]:
+        raw_id = state.get("last_referenced_dish_id")
+        try:
+            dish_id = UUID(raw_id) if isinstance(raw_id, str) else None
+        except ValueError:
+            dish_id = None
+        if dish_id is None:
+            pending = _new_pending_clarification(
+                "dish_referent", state.get("order_stage", "idle")
+            )
+            return {
+                "pending_clarification": pending.model_dump(mode="json"),
+                "response": "Уточните, о каком блюде идет речь.",
+                "error_code": "order_clarification",
+            }
+        async with self._menu_factory() as menu:
+            dish = await menu.get_dish(dish_id)
+        return {
+            "last_referenced_dish_id": str(dish.dish_id),
+            "last_referenced_dish_name": _display_name(dish.name),
+            "response": _format_dish(dish),
+            "error_code": None,
+        }
+
+    @staticmethod
+    def _show_previous_order(state: dict[str, Any]) -> dict[str, Any]:
+        snapshot_data = state.get("confirmed_order")
+        if not isinstance(snapshot_data, dict):
+            archive = state.get("confirmed_order_archive")
+            snapshot_data = archive[-1] if isinstance(archive, list) and archive else None
+        try:
+            snapshot = ConfirmedOrder.model_validate(snapshot_data)
+        except ValidationError:
+            return {
+                "response": (
+                    "В этом диалоге нет сохраненного подтвержденного снимка заказа. "
+                    "Я не могу подтвердить размещение или статус доставки."
+                ),
+                "error_code": None,
+            }
+        lines = ["Есть сохраненный подтвержденный снимок заказа:"]
+        lines.extend(
+            f"• {_display_name(str(item['name']))} × {item['quantity']}"
+            for item in snapshot.items
+        )
+        lines.extend(
+            [
+                f"Итого: {_money(snapshot.total_minor)}",
+                "Это checkpoint-снимок: заказ еще не размещен, статус приготовления или доставки недоступен.",
+            ]
+        )
+        return {"response": "\n".join(lines), "error_code": None}
 
     @staticmethod
     def _start_response(state: dict[str, Any]) -> dict[str, Any]:
@@ -642,7 +1182,10 @@ class OrderDialog:
             for item in state.get("confirmed_order_archive", [])
         ]
         current_data = state.get("confirmed_order")
-        if len(archive) + (1 if current_data is not None else 0) >= MAX_CONFIRMED_SNAPSHOTS:
+        if (
+            len(archive) + (1 if current_data is not None else 0)
+            >= MAX_CONFIRMED_SNAPSHOTS
+        ):
             return {
                 "response": (
                     "Сохранено максимальное число подтвержденных заказов (5). "
@@ -651,13 +1194,21 @@ class OrderDialog:
                 "error_code": "confirmed_archive_full",
             }
         if current_data is not None:
-            current = ConfirmedOrder.model_validate(current_data).model_dump(mode="json")
-            if not archive or archive[-1]["confirmation_key"] != current["confirmation_key"]:
+            current = ConfirmedOrder.model_validate(current_data).model_dump(
+                mode="json"
+            )
+            if (
+                not archive
+                or archive[-1]["confirmation_key"] != current["confirmation_key"]
+            ):
                 archive.append(current)
         changes = _empty_draft_changes(state)
         changes.update(
             confirmed_order=None,
             confirmed_order_archive=archive,
+            recent_interactions=[],
+            last_action=None,
+            last_referenced_dish_name=None,
             response="Новый заказ начат. Корзина пуста — выберите блюда.",
             error_code=None,
         )
@@ -762,13 +1313,17 @@ class OrderDialog:
             for item in result.items:
                 by_id[item.dish_id] = item
         exact = [
-            item for item in by_id.values()
+            item
+            for item in by_id.values()
             if any(item.name.casefold() == query.casefold() for query in queries)
         ]
         candidates = exact or list(by_id.values())
         if len(candidates) == 1:
             return await menu.get_dish(candidates[0].dish_id), []
-        return None, [PendingCandidate(dish_id=item.dish_id, name=item.name) for item in candidates]
+        return None, [
+            PendingCandidate(dish_id=item.dish_id, name=item.name)
+            for item in candidates
+        ]
 
     async def _resolve_cart_item(
         self, menu: MenuGateway, cart: list[CartStateItem], queries: list[str]
@@ -789,7 +1344,8 @@ class OrderDialog:
             if any(query.casefold() in dish.name.casefold() for query in queries):
                 by_id[dish.dish_id] = dish
         exact = [
-            dish for dish in by_id.values()
+            dish
+            for dish in by_id.values()
             if any(dish.name.casefold() == query.casefold() for query in queries)
         ]
         matches = exact or list(by_id.values())
@@ -808,8 +1364,12 @@ class OrderDialog:
                 runner_up = scored[1][0] if len(scored) > 1 else 0.0
                 if scored[0][0] - runner_up >= FUZZY_SEPARATION_MARGIN:
                     closest = scored[0][1]
-                    return None, [PendingCandidate(dish_id=closest.dish_id, name=closest.name)]
-        return None, [PendingCandidate(dish_id=dish.dish_id, name=dish.name) for dish in matches]
+                    return None, [
+                        PendingCandidate(dish_id=closest.dish_id, name=closest.name)
+                    ]
+        return None, [
+            PendingCandidate(dish_id=dish.dish_id, name=dish.name) for dish in matches
+        ]
 
     async def _execute_item_action(
         self,
@@ -827,22 +1387,34 @@ class OrderDialog:
                     candidates = []
                 else:
                     queries = [proposed.name]
-                    if proposed.lookup_query and proposed.lookup_query.casefold() != proposed.name.casefold():
+                    if (
+                        proposed.lookup_query
+                        and proposed.lookup_query.casefold() != proposed.name.casefold()
+                    ):
                         queries.append(proposed.lookup_query)
                     if proposal.action in {"set_quantity", "decrement", "remove"}:
-                        dish, candidates = await self._resolve_cart_item(menu, cart, queries)
+                        dish, candidates = await self._resolve_cart_item(
+                            menu, cart, queries
+                        )
                     else:
                         dish, candidates = await self._resolve_menu_item(menu, queries)
                 if dish is None:
                     if not candidates:
-                        return {"response": f"Не удалось однозначно найти «{proposed.name}».", "error_code": "dish_not_found"}
-                    pending = PendingAction(action=proposal.action, quantity=proposed.quantity)
+                        return {
+                            "response": f"Не удалось однозначно найти «{proposed.name}».",
+                            "error_code": "dish_not_found",
+                        }
+                    pending = PendingAction(
+                        action=proposal.action, quantity=proposed.quantity
+                    )
                     batch = PendingBatch(
                         proposal=proposal,
                         resolved_dish_ids=resolved_ids,
                         unresolved_index=index,
                         return_stage=(
-                            "editing_cart" if state.get("order_stage") == "editing_cart" else "idle"
+                            "editing_cart"
+                            if state.get("order_stage") == "editing_cart"
+                            else "idle"
                         ),
                     )
                     choices = "\n".join(
@@ -853,32 +1425,58 @@ class OrderDialog:
                         "order_stage": "awaiting_disambiguation",
                         "pending_action": pending.model_dump(mode="json"),
                         "pending_batch": batch.model_dump(mode="json"),
-                        "candidates": [item.model_dump(mode="json") for item in candidates],
+                        "candidates": [
+                            item.model_dump(mode="json") for item in candidates
+                        ],
                         "response": f"Уточните блюдо номером:\n{choices}",
                         "error_code": "dish_ambiguous",
                     }
                 if not dish.available and proposal.action in {"add", "dish_info"}:
-                    return {"response": f"{dish.name} сейчас недоступно.", "error_code": "dish_unavailable"}
+                    return {
+                        "response": f"{dish.name} сейчас недоступно.",
+                        "error_code": "dish_unavailable",
+                    }
                 resolved_ids[index] = dish.dish_id
                 resolved.append((dish, proposed.quantity or 1))
 
         if proposal.action == "dish_info":
             if len(resolved) != 1:
-                return {"response": "Уточните одно блюдо для подробной информации.", "error_code": "order_clarification"}
-            return {"response": _format_dish(resolved[0][0]), "error_code": None}
+                return {
+                    "response": "Уточните одно блюдо для подробной информации.",
+                    "error_code": "order_clarification",
+                }
+            return {
+                "last_referenced_dish_id": str(resolved[0][0].dish_id),
+                "last_referenced_dish_name": _display_name(resolved[0][0].name),
+                "response": _format_dish(resolved[0][0]),
+                "error_code": None,
+            }
         if proposal.action == "add":
             new_cart = add_items(
                 cart,
-                [CartStateItem(dish_id=dish.dish_id, quantity=quantity) for dish, quantity in resolved],
+                [
+                    CartStateItem(dish_id=dish.dish_id, quantity=quantity)
+                    for dish, quantity in resolved
+                ],
             )
-            response = "Добавлено: " + ", ".join(f"{dish.name} × {quantity}" for dish, quantity in resolved) + "."
+            response = (
+                "Добавлено: "
+                + ", ".join(f"{dish.name} × {quantity}" for dish, quantity in resolved)
+                + "."
+            )
         else:
             if len(resolved) != 1:
-                return {"response": "Изменяйте одно блюдо за раз.", "error_code": "order_clarification"}
+                return {
+                    "response": "Изменяйте одно блюдо за раз.",
+                    "error_code": "order_clarification",
+                }
             dish, quantity = resolved[0]
             if proposal.action == "set_quantity":
                 if proposal.items[0].quantity is None:
-                    return {"response": "Укажите новое количество блюда.", "error_code": "order_clarification"}
+                    return {
+                        "response": "Укажите новое количество блюда.",
+                        "error_code": "order_clarification",
+                    }
                 new_cart = set_quantity(cart, dish.dish_id, quantity)
                 response = f"Количество «{dish.name}» изменено: {quantity}."
             elif proposal.action == "decrement":
@@ -894,6 +1492,180 @@ class OrderDialog:
         changes.update(
             cart=_dump_cart(new_cart),
             order_stage="editing_cart" if editing_cart else "idle",
+            last_referenced_dish_id=str(resolved[-1][0].dish_id),
+            last_referenced_dish_name=_display_name(resolved[-1][0].name),
+            pending_action=None,
+            pending_batch=None,
+            candidates=[],
+            response=response,
+            error_code=None,
+        )
+        return changes
+
+    async def _execute_action_plan(
+        self,
+        state: dict[str, Any],
+        plan: OrderActionPlan,
+        resolved_dish_ids: list[list[UUID | None]] | None = None,
+    ) -> dict[str, Any]:
+        cart = _cart_from_state(state)
+        resolved_ids = (
+            [list(operation_ids) for operation_ids in resolved_dish_ids]
+            if resolved_dish_ids is not None
+            else [[None] * len(operation.items) for operation in plan.operations]
+        )
+        resolved: list[list[tuple[DishDetail, int]]] = []
+        async with self._menu_factory() as menu:
+            for operation_index, operation in enumerate(plan.operations):
+                operation_resolved: list[tuple[DishDetail, int]] = []
+                for item_index, proposed in enumerate(operation.items):
+                    selected_id = resolved_ids[operation_index][item_index]
+                    if selected_id is not None:
+                        dish = await menu.get_dish(selected_id)
+                        candidates: list[PendingCandidate] = []
+                    else:
+                        queries = [proposed.name]
+                        if (
+                            proposed.lookup_query
+                            and proposed.lookup_query.casefold()
+                            != proposed.name.casefold()
+                        ):
+                            queries.append(proposed.lookup_query)
+                        if operation.action in {
+                            "set_quantity",
+                            "decrement",
+                            "remove",
+                        }:
+                            dish, candidates = await self._resolve_cart_item(
+                                menu, cart, queries
+                            )
+                        else:
+                            dish, candidates = await self._resolve_menu_item(
+                                menu, queries
+                            )
+                    if dish is None:
+                        if not candidates:
+                            return {
+                                "response": (
+                                    f"Не удалось однозначно найти «{proposed.name}». "
+                                    "Корзина не изменена. Уточните название блюда."
+                                ),
+                                "error_code": "batch_dish_not_found",
+                            }
+                        pending = PendingAction(
+                            action=operation.action,
+                            quantity=proposed.quantity,
+                        )
+                        pending_plan = PendingActionPlan(
+                            plan=plan,
+                            resolved_dish_ids=resolved_ids,
+                            unresolved_operation_index=operation_index,
+                            unresolved_item_index=item_index,
+                            return_stage=(
+                                "editing_cart"
+                                if state.get("order_stage") == "editing_cart"
+                                else "idle"
+                            ),
+                        )
+                        choices = "\n".join(
+                            f"{index}. {_display_name(candidate.name)}"
+                            for index, candidate in enumerate(candidates, 1)
+                        )
+                        return {
+                            "order_stage": "awaiting_disambiguation",
+                            "pending_action": pending.model_dump(mode="json"),
+                            "pending_batch": pending_plan.model_dump(mode="json"),
+                            "candidates": [
+                                candidate.model_dump(mode="json")
+                                for candidate in candidates
+                            ],
+                            "response": (
+                                "Корзина не изменена. Уточните блюдо номером:\n"
+                                f"{choices}"
+                            ),
+                            "error_code": "batch_dish_ambiguous",
+                        }
+                    if not dish.available and operation.action == "add":
+                        return {
+                            "response": (
+                                f"{dish.name} сейчас недоступно. Корзина не изменена."
+                            ),
+                            "error_code": "batch_dish_unavailable",
+                        }
+                    resolved_ids[operation_index][item_index] = dish.dish_id
+                    operation_resolved.append((dish, proposed.quantity or 1))
+                resolved.append(operation_resolved)
+
+        first_operation_by_dish: dict[UUID, int] = {}
+        for operation_index, operation_resolved in enumerate(resolved):
+            for dish, _ in operation_resolved:
+                previous = first_operation_by_dish.setdefault(
+                    dish.dish_id, operation_index
+                )
+                if previous != operation_index:
+                    return {
+                        "response": (
+                            f"Для «{dish.name}» указано несколько изменений. "
+                            "Корзина не изменена. Уточните итоговое действие."
+                        ),
+                        "error_code": "batch_conflict",
+                    }
+
+        candidate_cart = list(cart)
+        descriptions: list[str] = []
+        try:
+            for operation, operation_resolved in zip(
+                plan.operations, resolved, strict=True
+            ):
+                if operation.action == "add":
+                    candidate_cart = add_items(
+                        candidate_cart,
+                        [
+                            CartStateItem(
+                                dish_id=dish.dish_id,
+                                quantity=quantity,
+                            )
+                            for dish, quantity in operation_resolved
+                        ],
+                    )
+                    descriptions.extend(
+                        f"добавлено «{dish.name}» × {quantity}"
+                        for dish, quantity in operation_resolved
+                    )
+                    continue
+                dish, quantity = operation_resolved[0]
+                if operation.action == "set_quantity":
+                    candidate_cart = set_quantity(
+                        candidate_cart, dish.dish_id, quantity
+                    )
+                    descriptions.append(
+                        f"«{dish.name}» — итоговое количество {quantity}"
+                    )
+                elif operation.action == "decrement":
+                    candidate_cart = decrement(candidate_cart, dish.dish_id)
+                    descriptions.append(f"«{dish.name}» уменьшено на один")
+                else:
+                    candidate_cart = remove_item(candidate_cart, dish.dish_id)
+                    descriptions.append(f"«{dish.name}» удалено")
+        except CartOperationError as exc:
+            return {
+                "response": (
+                    f"Корзина не изменена. {exc} Уточните изменения и повторите запрос."
+                ),
+                "error_code": "batch_cart_validation",
+            }
+
+        changes = _invalidated(state)
+        editing_cart = state.get("order_stage") == "editing_cart"
+        response = "Изменения применены: " + "; ".join(descriptions) + "."
+        if editing_cart:
+            response += " Когда закончите, выберите «Вернуться к итогу»."
+        last_dish = resolved[-1][-1][0]
+        changes.update(
+            cart=_dump_cart(candidate_cart),
+            order_stage="editing_cart" if editing_cart else "idle",
+            last_referenced_dish_id=str(last_dish.dish_id),
+            last_referenced_dish_name=_display_name(last_dish.name),
             pending_action=None,
             pending_batch=None,
             candidates=[],
@@ -903,10 +1675,16 @@ class OrderDialog:
         return changes
 
     async def _handle_candidate_choice(self, state: dict[str, Any]) -> dict[str, Any]:
-        candidates = [PendingCandidate.model_validate(item) for item in state.get("candidates", [])]
+        candidates = [
+            PendingCandidate.model_validate(item)
+            for item in state.get("candidates", [])
+        ]
         choice = int(state["user_message"].strip())
         if choice < 1 or choice > len(candidates):
-            return {"response": f"Выберите номер от 1 до {len(candidates)}.", "error_code": "dish_ambiguous"}
+            return {
+                "response": f"Выберите номер от 1 до {len(candidates)}.",
+                "error_code": "dish_ambiguous",
+            }
         selected = candidates[choice - 1]
         batch_data = state.get("pending_batch")
         if batch_data is None:
@@ -917,6 +1695,22 @@ class OrderDialog:
                 "response": "Запрос устарел. Повторите изменение корзины целиком.",
                 "error_code": "pending_batch_missing",
             }
+        if isinstance(batch_data, dict) and "plan" in batch_data:
+            pending_plan = PendingActionPlan.model_validate(batch_data)
+            resolved_plan_ids = [
+                list(operation_ids) for operation_ids in pending_plan.resolved_dish_ids
+            ]
+            resolved_plan_ids[pending_plan.unresolved_operation_index][
+                pending_plan.unresolved_item_index
+            ] = selected.dish_id
+            clean_state = dict(state)
+            clean_state["order_stage"] = pending_plan.return_stage
+            clean_state["action_proposal"] = pending_plan.plan.model_dump(mode="json")
+            return await self._execute_action_plan(
+                clean_state,
+                pending_plan.plan,
+                resolved_plan_ids,
+            )
         batch = PendingBatch.model_validate(batch_data)
         resolved_ids = list(batch.resolved_dish_ids)
         resolved_ids[batch.unresolved_index] = selected.dish_id
@@ -934,7 +1728,10 @@ class OrderDialog:
             return "collecting_phone", "Укажите номер телефона."
         if contacts.address is None:
             return "collecting_address", "Укажите адрес доставки."
-        return "collecting_time", "Выберите время доставки: «Как можно скорее» или «Выбрать дату и время»."
+        return (
+            "collecting_time",
+            "Выберите время доставки: «Как можно скорее» или «Выбрать дату и время».",
+        )
 
     async def _handle_contact(self, state: dict[str, Any]) -> dict[str, Any]:
         stage = state.get("order_stage")
@@ -944,27 +1741,45 @@ class OrderDialog:
         if stage in {"collecting_name", "collecting_edit_name"}:
             validated = _validate_name(value)
             if validated is None:
-                return {"response": "Укажите имя буквами (от 2 до 100 символов).", "error_code": "invalid_contact"}
+                return {
+                    "response": "Укажите имя буквами (от 2 до 100 символов).",
+                    "error_code": "invalid_contact",
+                }
             contacts.customer_name = validated
             if editing:
-                return await self._finish_contact_edit(state, contacts, "customer_name", validated)
+                return await self._finish_contact_edit(
+                    state, contacts, "customer_name", validated
+                )
             next_stage, prompt = "collecting_phone", "Укажите номер телефона."
         elif stage in {"collecting_phone", "collecting_edit_phone"}:
             validated = _validate_phone(value)
             if validated is None:
-                return {"response": "Укажите корректный номер телефона (7–15 цифр).", "error_code": "invalid_contact"}
+                return {
+                    "response": "Укажите корректный номер телефона (7–15 цифр).",
+                    "error_code": "invalid_contact",
+                }
             contacts.phone = validated
             if editing:
-                return await self._finish_contact_edit(state, contacts, "phone", validated)
+                return await self._finish_contact_edit(
+                    state, contacts, "phone", validated
+                )
             next_stage, prompt = "collecting_address", "Укажите адрес доставки."
         elif stage in {"collecting_address", "collecting_edit_address"}:
             validated = _validate_address(value)
             if validated is None:
-                return {"response": "Укажите полный адрес доставки.", "error_code": "invalid_contact"}
+                return {
+                    "response": "Укажите полный адрес доставки.",
+                    "error_code": "invalid_contact",
+                }
             contacts.address = validated
             if editing:
-                return await self._finish_contact_edit(state, contacts, "address", validated)
-            next_stage, prompt = "collecting_time", "Выберите время доставки: «Как можно скорее» или «Выбрать дату и время»."
+                return await self._finish_contact_edit(
+                    state, contacts, "address", validated
+                )
+            next_stage, prompt = (
+                "collecting_time",
+                "Выберите время доставки: «Как можно скорее» или «Выбрать дату и время».",
+            )
         else:
             if value.casefold().strip() == "выбрать дату и время":
                 return {
@@ -979,7 +1794,9 @@ class OrderDialog:
                 }
             contacts.requested_at = requested_at
             if editing:
-                return await self._finish_contact_edit(state, contacts, "requested_at", requested_at)
+                return await self._finish_contact_edit(
+                    state, contacts, "requested_at", requested_at
+                )
             changes = _invalidated(state)
             quote_state = dict(state)
             quote_state.update(changes)
@@ -991,7 +1808,12 @@ class OrderDialog:
             )
             return changes
         changes = _invalidated(state)
-        changes.update(contacts=contacts.model_dump(mode="json"), order_stage=next_stage, response=prompt, error_code=None)
+        changes.update(
+            contacts=contacts.model_dump(mode="json"),
+            order_stage=next_stage,
+            response=prompt,
+            error_code=None,
+        )
         return changes
 
     async def _finish_contact_edit(
@@ -1011,11 +1833,16 @@ class OrderDialog:
         changes.update(quote_changes, contacts=contacts.model_dump(mode="json"))
         return changes
 
-    async def _prepare_quote(self, state: dict[str, Any], contacts: ContactData) -> dict[str, Any]:
+    async def _prepare_quote(
+        self, state: dict[str, Any], contacts: ContactData
+    ) -> dict[str, Any]:
         cart = _cart_from_state(state)
         async with self._menu_factory() as menu:
             quote = await menu.calculate_cart(
-                [CartItemInput(dish_id=item.dish_id, quantity=item.quantity) for item in cart]
+                [
+                    CartItemInput(dish_id=item.dish_id, quantity=item.quantity)
+                    for item in cart
+                ]
             )
         delivery_fee = await self._settings.get_delivery_fee_minor()
         revision = int(state.get("draft_revision", 0))
@@ -1029,6 +1856,7 @@ class OrderDialog:
         )
         return {
             "quote_snapshot": snapshot.model_dump(mode="json"),
+            "checkout_session_id": None,
             "order_stage": "awaiting_confirmation",
             "response": _format_summary(snapshot, contacts),
             "error_code": None,
@@ -1038,12 +1866,18 @@ class OrderDialog:
         if state.get("order_stage") == "confirmed" and state.get("confirmed_order"):
             return {"response": CONFIRMED_MESSAGE, "error_code": None}
         if state.get("order_stage") != "awaiting_confirmation":
-            return {"response": "Сначала завершите оформление и проверьте итоговую сводку.", "error_code": "confirmation_not_ready"}
+            return {
+                "response": "Сначала завершите оформление и проверьте итоговую сводку.",
+                "error_code": "confirmation_not_ready",
+            }
         contacts = _contacts_from_state(state)
         previous = QuoteSnapshot.model_validate(state.get("quote_snapshot"))
         refreshed = await self._prepare_quote(state, contacts)
         current = QuoteSnapshot.model_validate(refreshed["quote_snapshot"])
-        if current.fingerprint != previous.fingerprint or current.draft_revision != previous.draft_revision:
+        if (
+            current.fingerprint != previous.fingerprint
+            or current.draft_revision != previous.draft_revision
+        ):
             revised_state = dict(state)
             revised_state["draft_revision"] = int(state.get("draft_revision", 0)) + 1
             revised = await self._prepare_quote(revised_state, contacts)

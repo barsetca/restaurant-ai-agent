@@ -65,6 +65,7 @@ FAQ and Telegram are disabled by default, so ordinary local startup requires nei
 FAQ_ENABLED
 OPENAI_API_KEY
 OPENAI_CHAT_MODEL
+LLM_DEBUG_RESPONSE_JSON
 OPENAI_EMBEDDING_MODEL
 OPENAI_EMBEDDING_DIMENSIONS
 GOOGLE_SHEETS_SPREADSHEET_ID
@@ -79,6 +80,13 @@ MCP_STARTUP_TIMEOUT_SECONDS
 MCP_TOOL_TIMEOUT_SECONDS
 MCP_SHUTDOWN_TIMEOUT_SECONDS
 ```
+
+`LLM_DEBUG_RESPONSE_JSON` по умолчанию выключен. Значение `true` действует только при
+`APP_ENV=development`, `dev` или `local`; в production оно принудительно игнорируется.
+Debug record содержит только распарсенную API DTO после структурной валидации: произвольные
+строки блюда, selectors и clarification заменяются на `[REDACTED]`, структура и quantities
+сохраняются, а запись ограничена 4000 символами. Prompts, user message, raw HTTP response,
+headers, credentials и непроверенный model text не логируются.
 
 To use Google Sheets, create a service account, enable Google Sheets API access, share the spreadsheet with the service-account email as Viewer, and set `GOOGLE_CREDENTIALS_PATH` to the local JSON file. The adapter requests the read-only Sheets scope. The spreadsheet must contain a worksheet named `FAQ` with these headers:
 
@@ -194,7 +202,7 @@ Inputs are bounded to 20 cart lines, quantity 1–20 per dish after aggregation,
 
 ## M5 cart and confirmation
 
-The Telegram order flow supports menu browse/search/details, Russian word forms through canonical lookup plus PostgreSQL full-text fallback, atomic multi-item add, set/decrement/remove/clear/view, FAQ interleaving, delivery contacts, ASAP or exact `DD.MM.YYYY HH:MM` delivery time, authoritative quote, and explicit confirmation. The LLM receives only the current non-contact message and returns a typed proposal; it never receives phone/address/checkpoint data, chooses dish IDs, or mutates/prices the cart.
+The Telegram order flow supports menu browse/search/details, Russian word forms through canonical lookup plus PostgreSQL full-text fallback, atomic multi-item add, ordered multi-action plans for add/set/decrement/remove, clear/view, FAQ interleaving, delivery contacts, ASAP or exact `DD.MM.YYYY HH:MM` delivery time, authoritative quote, and explicit confirmation. The LLM receives only the current non-contact message plus a bounded allowlisted `OrderContext` and returns a typed single proposal or cart plan; it never receives phone/address/full checkpoint data, chooses dish IDs, or mutates/prices the cart. Multi-action dishes are fully resolved and validated before a local candidate cart is committed in one state update.
 
 `restaurant_settings` must contain a canonical non-negative integer `delivery_fee_minor`. There is no application default. For the approved development value:
 
@@ -250,7 +258,7 @@ TEST_MCP_DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/restaura
   uv run pytest tests/integration/test_m5_order_postgres.py
 ```
 
-Manual Telegram acceptance should use synthetic contact data and cover: `/start` in idle/draft/confirmed; Russian multi-item add including «две брускетты»; typo «брускету» with explicit numbered selection; multiple ambiguity selections without partial cart mutation; inline ASAP/manual time and future `ДД.ММ.ГГГГ ЧЧ:ММ`; FAQ clarification; summary buttons; editing every field; stale-button rejection; two-step cancel; backend restart recovery; repeated confirmation; new order, second confirmation and preserved first snapshot. Verify afterward that business order/calendar tables remain unchanged.
+Manual Telegram acceptance should use synthetic contact data and cover: `/start` in idle/draft/confirmed; Russian multi-item add including «две брускетты»; one ordered multi-action request such as two independent `set_quantity` changes plus «салат не трогай»; typo «брускету» with explicit numbered selection; multiple ambiguity selections without partial cart mutation; inline ASAP/manual time and future `ДД.ММ.ГГГГ ЧЧ:ММ`; FAQ clarification; summary buttons; editing every field; stale-button rejection; two-step cancel; backend restart recovery; repeated confirmation; new order, second confirmation and preserved first snapshot. Verify afterward that business order/calendar tables remain unchanged.
 
 Live Google Sheets/OpenAI/Qdrant verification has passed on synthetic FAQ data, including update and deactivation without restart. Telegram `/start` and FAQ chat flows have also been verified. HTTP diagnostics remain enabled, with centralized redaction of tokens, API keys, authorization headers, URL passwords, and exception tracebacks.
 

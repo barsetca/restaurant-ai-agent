@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     faq_enabled: bool = False
     openai_api_key: str | None = None
     openai_chat_model: str = "gpt-4.1-mini"
+    llm_debug_response_json: bool = False
     openai_embedding_model: str = "text-embedding-3-small"
     openai_embedding_dimensions: int = Field(default=1536, gt=0)
     google_sheets_spreadsheet_id: str | None = None
@@ -39,6 +40,14 @@ class Settings(BaseSettings):
     mcp_startup_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
     mcp_tool_timeout_seconds: float = Field(default=15.0, gt=0.0, le=120.0)
     mcp_shutdown_timeout_seconds: float = Field(default=5.0, gt=0.0, le=30.0)
+
+    @property
+    def llm_debug_response_json_enabled(self) -> bool:
+        return self.llm_debug_response_json and self.app_env.casefold() in {
+            "development",
+            "dev",
+            "local",
+        }
 
     @model_validator(mode="after")
     def validate_enabled_integrations(self) -> "Settings":
