@@ -73,12 +73,12 @@
 
 - Token присутствует в ignored `.env`, имеет валидный формат и без изменений передается в running backend container, Pydantic Settings и `python-telegram-bot`.
 - Текущая конфигурация host/container: `TELEGRAM_ENABLED=false`; поэтому lifespan не запускает polling и `/start` handler не работает.
-- Повторный `getMe` 2026-11-17: host **PASS HTTP 200**; из backend container через project venv **PASS**, bot `@restaurant_faq_agent_bot`, id `9262411763`.
+- Повторный `getMe` 2026-11-17: host **PASS HTTP 200**; из backend container через project venv **PASS**, bot `@example_bot`, id `[REDACTED]`.
 - Контрольный synthetic invalid token: host **PASS HTTP 401**; `python-telegram-bot` в container получил ожидаемый `InvalidToken`.
 - `getWebhookInfo`: webhook отсутствует, `pending_update_count=3`.
 - `getUpdates` без `offset`: **PASS**, возвращены 3 pending update, среди них 2 команды `/start`; chat ID, тексты и данные пользователя не выводились. Updates не подтверждались и не удалялись.
 - Прежний token-specific timeout сейчас не воспроизводится и, вероятно, был временным сбоем Telegram/API route. Сетевая конфигурация и token не изменялись.
-- Immediate cause отсутствия ответа: polling намеренно отключен. Для завершения E2E владелец должен подтвердить, что чат открыт с `@restaurant_faq_agent_bot`, затем включить `TELEGRAM_ENABLED=true` и пересоздать только backend.
+- Immediate cause отсутствия ответа: polling намеренно отключен. Для завершения E2E владелец должен подтвердить, что чат открыт с настроенным ботом, затем включить `TELEGRAM_ENABLED=true` и пересоздать только backend.
 
 ## Secure Logging M2.3
 
