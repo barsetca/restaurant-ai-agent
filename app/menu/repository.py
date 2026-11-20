@@ -6,7 +6,7 @@ from sqlalchemy import case, func, literal_column, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.db.models import MenuItem
-from app.menu.contracts import MAX_SEARCH_RESULTS, SearchMenuRequest
+from app.menu.contracts import BrowseMenuRequest, MAX_SEARCH_RESULTS, SearchMenuRequest
 
 
 def _escape_like(value: str) -> str:
@@ -33,7 +33,9 @@ class MenuRepository:
             contains = f"%{escaped}%"
             starts = f"{escaped}%"
             description_lower = func.lower(func.coalesce(MenuItem.description, ""))
-            ingredients_lower = func.lower(func.array_to_string(MenuItem.ingredients, " "))
+            ingredients_lower = func.lower(
+                func.array_to_string(MenuItem.ingredients, " ")
+            )
             russian = literal_column("'russian'::regconfig")
             searchable = func.concat_ws(
                 " ",
@@ -69,18 +71,52 @@ class MenuRepository:
         if request.category is not None:
             statement = statement.where(category_lower == request.category.casefold())
         if request.dietary_tags:
-            statement = statement.where(MenuItem.dietary_tags.contains(request.dietary_tags))
+            statement = statement.where(
+                MenuItem.dietary_tags.contains(request.dietary_tags)
+            )
 
+        async with self._read_session() as session:
+            result = await session.execute(statement)
+            return tuple(result.scalars().all())
+
+    async def list_categories(self) -> Sequence[tuple[str, int]]:
+        statement = (
+            select(MenuItem.category, func.count(MenuItem.id))
+            .where(MenuItem.available.is_(True))
+            .group_by(MenuItem.category)
+            .order_by(func.lower(MenuItem.category), MenuItem.category)
+        )
+        async with self._read_session() as session:
+            result = await session.execute(statement)
+            return tuple((category, count) for category, count in result.all())
+
+    async def browse(self, request: BrowseMenuRequest) -> Sequence[MenuItem]:
+        if request.category is None:
+            return ()
+        statement = (
+            select(MenuItem)
+            .where(
+                MenuItem.available.is_(True),
+                func.lower(MenuItem.category) == request.category.casefold(),
+            )
+            .order_by(func.lower(MenuItem.name), MenuItem.id)
+            .offset(request.offset)
+            .limit(request.limit + 1)
+        )
         async with self._read_session() as session:
             result = await session.execute(statement)
             return tuple(result.scalars().all())
 
     async def get(self, dish_id: UUID) -> MenuItem | None:
         async with self._read_session() as session:
-            result = await session.execute(select(MenuItem).where(MenuItem.id == dish_id))
+            result = await session.execute(
+                select(MenuItem).where(MenuItem.id == dish_id)
+            )
             return result.scalar_one_or_none()
 
     async def get_many(self, dish_ids: Sequence[UUID]) -> Sequence[MenuItem]:
         async with self._read_session() as session:
-            result = await session.execute(select(MenuItem).where(MenuItem.id.in_(dish_ids)))
+            result = await session.execute(
+                select(MenuItem).where(MenuItem.id.in_(dish_ids))
+            )
             return tuple(result.scalars().all())

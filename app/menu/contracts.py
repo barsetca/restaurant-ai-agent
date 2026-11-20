@@ -5,6 +5,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 MAX_SEARCH_QUERY_LENGTH = 200
 MAX_SEARCH_RESULTS = 20
+DEFAULT_BROWSE_LIMIT = 5
+MAX_BROWSE_LIMIT = 20
 MAX_DIETARY_TAGS = 10
 MAX_DIETARY_TAG_LENGTH = 50
 MAX_CART_LINES = 20
@@ -14,6 +16,7 @@ SUPPORTED_CURRENCY = "EUR"
 
 SearchQuery = Annotated[str, Field(max_length=MAX_SEARCH_QUERY_LENGTH)]
 CategoryFilter = Annotated[str, Field(min_length=1, max_length=120)]
+BrowseCategory = Annotated[str, Field(min_length=1, max_length=120, pattern=r"\S")]
 DietaryTag = Annotated[str, Field(min_length=1, max_length=MAX_DIETARY_TAG_LENGTH)]
 Quantity = Annotated[int, Field(ge=1, le=MAX_ITEM_QUANTITY)]
 
@@ -33,7 +36,9 @@ class MenuContract(BaseModel):
 class SearchMenuRequest(MenuContract):
     query: SearchQuery | None = None
     category: CategoryFilter | None = None
-    dietary_tags: list[DietaryTag] = Field(default_factory=list, max_length=MAX_DIETARY_TAGS)
+    dietary_tags: list[DietaryTag] = Field(
+        default_factory=list, max_length=MAX_DIETARY_TAGS
+    )
 
     @field_validator("query")
     @classmethod
@@ -69,6 +74,17 @@ class CartItemInput(MenuContract):
     quantity: Quantity
 
 
+class BrowseMenuRequest(MenuContract):
+    category: BrowseCategory
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=DEFAULT_BROWSE_LIMIT, ge=1, le=MAX_BROWSE_LIMIT)
+
+    @field_validator("category")
+    @classmethod
+    def normalize_category(cls, value: str) -> str:
+        return _clean_text(value)
+
+
 class DishSummary(MenuContract):
     dish_id: UUID
     name: str
@@ -89,6 +105,31 @@ class MenuSearchResult(MenuContract):
     items: list[DishSummary]
 
 
+class CategorySummary(MenuContract):
+    id: str
+    name: str
+    available_dish_count: int = Field(ge=1)
+
+
+class CategoryList(MenuContract):
+    categories: list[CategorySummary]
+
+
+class BrowseMenuItem(MenuContract):
+    dish_id: UUID
+    name: str
+    price_minor: int = Field(ge=0)
+    currency: str
+
+
+class BrowseMenuResult(MenuContract):
+    category: str | None
+    items: list[BrowseMenuItem]
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1, le=MAX_BROWSE_LIMIT)
+    has_more: bool
+
+
 class CartLine(MenuContract):
     dish_id: UUID
     name: str
@@ -100,4 +141,21 @@ class CartLine(MenuContract):
 class CartQuote(MenuContract):
     items: list[CartLine]
     subtotal_minor: int = Field(ge=0)
+    currency: str = SUPPORTED_CURRENCY
+
+
+class InspectedCartItem(MenuContract):
+    dish_id: UUID
+    name: str | None
+    quantity: int = Field(ge=1)
+    unit_price_minor: int | None = Field(default=None, ge=0)
+    line_total_minor: int | None = Field(default=None, ge=0)
+    available: bool
+    missing: bool
+
+
+class CartInspection(MenuContract):
+    items: list[InspectedCartItem]
+    available_subtotal_minor: int = Field(ge=0)
+    has_unavailable_items: bool
     currency: str = SUPPORTED_CURRENCY

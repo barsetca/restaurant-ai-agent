@@ -11,8 +11,12 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from pydantic import ValidationError
 
 from app.menu.contracts import (
+    DEFAULT_BROWSE_LIMIT,
+    BrowseMenuResult,
+    CartInspection,
     CartItemInput,
     CartQuote,
+    CategoryList,
     DishDetail,
     MenuSearchResult,
 )
@@ -148,7 +152,26 @@ class MenuMcpClient:
             arguments["category"] = category
         if dietary_tags is not None:
             arguments["dietary_tags"] = dietary_tags
-        return self._validate(MenuSearchResult, await self._call("search_menu", arguments))
+        return self._validate(
+            MenuSearchResult, await self._call("search_menu", arguments)
+        )
+
+    async def list_categories(self) -> CategoryList:
+        return self._validate(CategoryList, await self._call("list_categories", {}))
+
+    async def browse_menu(
+        self,
+        category: str,
+        offset: int = 0,
+        limit: int = DEFAULT_BROWSE_LIMIT,
+    ) -> BrowseMenuResult:
+        arguments: dict[str, Any] = {"offset": offset, "limit": limit}
+        if category is not None:
+            arguments["category"] = category
+        return self._validate(
+            BrowseMenuResult,
+            await self._call("browse_menu", arguments),
+        )
 
     async def get_dish(self, dish_id: UUID) -> DishDetail:
         return self._validate(
@@ -165,9 +188,20 @@ class MenuMcpClient:
             ),
         )
 
+    async def inspect_cart(self, items: list[CartItemInput]) -> CartInspection:
+        return self._validate(
+            CartInspection,
+            await self._call(
+                "inspect_cart",
+                {"items": [item.model_dump(mode="json") for item in items]},
+            ),
+        )
+
     @staticmethod
     def _validate(model: type[Any], data: dict[str, Any]) -> Any:
         try:
             return model.model_validate(data)
         except ValidationError as exc:
-            raise MenuMcpProtocolError("Menu MCP returned invalid structured data") from exc
+            raise MenuMcpProtocolError(
+                "Menu MCP returned invalid structured data"
+            ) from exc

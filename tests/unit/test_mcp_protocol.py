@@ -29,6 +29,35 @@ class FakeMenuService:
             ]
         )
 
+    async def list_categories(self):
+        from app.menu.contracts import CategoryList, CategorySummary
+
+        return CategoryList(
+            categories=[CategorySummary(id="main", name="main", available_dish_count=1)]
+        )
+
+    async def browse_menu(self, category=None, offset=0, limit=5):
+        from app.menu.contracts import BrowseMenuItem, BrowseMenuResult
+
+        category = " ".join(category.split())
+        items = []
+        if category == "main":
+            items.append(
+                BrowseMenuItem(
+                    dish_id=KNOWN_DISH_ID,
+                    name="Паста",
+                    price_minor=1234,
+                    currency="EUR",
+                )
+            )
+        return BrowseMenuResult(
+            category=category,
+            items=items,
+            offset=offset,
+            limit=limit,
+            has_more=False,
+        )
+
     async def get_dish(self, dish_id):
         from app.menu.contracts import DishDetail
 
@@ -63,6 +92,26 @@ class FakeMenuService:
             subtotal_minor=1234 * items[0].quantity,
         )
 
+    async def inspect_cart(self, items: list[CartItemInput]):
+        from app.menu.contracts import CartInspection, InspectedCartItem
+
+        return CartInspection(
+            items=[
+                InspectedCartItem(
+                    dish_id=item.dish_id,
+                    name="Паста",
+                    quantity=item.quantity,
+                    unit_price_minor=1234,
+                    line_total_minor=1234 * item.quantity,
+                    available=True,
+                    missing=False,
+                )
+                for item in items
+            ],
+            available_subtotal_minor=sum(1234 * item.quantity for item in items),
+            has_unavailable_items=False,
+        )
+
 
 KNOWN_DISH_ID = uuid4()
 
@@ -78,9 +127,12 @@ async def test_protocol_lists_and_calls_all_tools_with_structured_output() -> No
     async with Client(server) as client:
         listed = await client.list_tools()
         assert {tool.name for tool in listed.tools} == {
+            "list_categories",
+            "browse_menu",
             "search_menu",
             "get_dish",
             "calculate_cart",
+            "inspect_cart",
         }
         search_tool = next(tool for tool in listed.tools if tool.name == "search_menu")
         assert search_tool.output_schema is not None
@@ -101,6 +153,34 @@ async def test_protocol_lists_and_calls_all_tools_with_structured_output() -> No
         browse = await client.call_tool("search_menu", {})
         assert browse.is_error is False
 
+        categories = await client.call_tool("list_categories", {})
+        assert categories.is_error is False
+        assert categories.structured_content["categories"][0]["id"] == "main"
+
+        page = await client.call_tool(
+            "browse_menu", {"category": "main", "offset": 0, "limit": 5}
+        )
+        assert page.is_error is False
+        assert page.structured_content["items"][0]["dish_id"] == str(KNOWN_DISH_ID)
+
+        empty_page = await client.call_tool("browse_menu", {"category": "unknown"})
+        assert empty_page.is_error is False
+        assert empty_page.structured_content["items"] == []
+
+        browse_tool = next(tool for tool in listed.tools if tool.name == "browse_menu")
+        assert "category" in browse_tool.input_schema["required"]
+        assert browse_tool.input_schema["properties"]["category"]["type"] == "string"
+        for arguments in (
+            {},
+            {"category": None},
+            {"category": ""},
+            {"category": "   "},
+            {"category": 123},
+        ):
+            assert (await client.call_tool("browse_menu", arguments)).is_error
+        normalized = await client.call_tool("browse_menu", {"category": " main "})
+        assert normalized.structured_content["category"] == "main"
+
         detail = await client.call_tool("get_dish", {"dish_id": str(KNOWN_DISH_ID)})
         assert detail.is_error is False
         assert detail.structured_content["available"] is True
@@ -112,6 +192,17 @@ async def test_protocol_lists_and_calls_all_tools_with_structured_output() -> No
         assert cart.is_error is False
         assert cart.structured_content["subtotal_minor"] == 2468
 
+        inspection = await client.call_tool(
+            "inspect_cart",
+            {"items": [{"dish_id": str(KNOWN_DISH_ID), "quantity": 2}]},
+        )
+        assert inspection.is_error is False
+        assert inspection.structured_content["available_subtotal_minor"] == 2468
+
+        empty_inspection = await client.call_tool("inspect_cart", {"items": []})
+        assert empty_inspection.is_error is False
+        assert empty_inspection.structured_content["items"] == []
+
 
 @pytest.mark.asyncio
 async def test_protocol_rejects_bounds_and_returns_safe_tool_error() -> None:
@@ -122,6 +213,17 @@ async def test_protocol_rejects_bounds_and_returns_safe_tool_error() -> None:
             {"items": [{"dish_id": str(KNOWN_DISH_ID), "quantity": 21}]},
         )
         assert invalid.is_error is True
+
+        invalid_page = await client.call_tool(
+            "browse_menu", {"category": "main", "offset": -1, "limit": 21}
+        )
+        assert invalid_page.is_error is True
+
+        invalid_inspection = await client.call_tool(
+            "inspect_cart",
+            {"items": [{"dish_id": str(KNOWN_DISH_ID), "quantity": 21}]},
+        )
+        assert invalid_inspection.is_error is True
 
         business_error = await client.call_tool(
             "calculate_cart",

@@ -1,8 +1,12 @@
 # Project Handoff — контекст для нового чата
 
+**M5.2-A3.1 ACCEPTED:** решение владельца от 2026-11-20, документальное закрытие — отчет 047. Owner LIVE acceptance отдельно не подтвержден. Реализация остается в текущем рабочем дереве; commit/push не выполнялись. A3.2 — NOT STARTED; перед следующим этапом отдельно согласовать scope и Codex prompt. ADR-025 и A3 design handoff сохраняются; отчеты 043–047 фиксируют реализацию и проверки.
+
+**Актуализация D04/D05:** `browse_menu.category` обязателен и непустой; protocol и real PostgreSQL integration PASS, full unit 270 PASS. Общий Ruff format check выявил 16 ранее неформатированных файлов вне scope. Статус PARTIALLY VERIFIED, owner acceptance не проводился; см. отчет 045.
+
 ## Что это
 
-Учебный Restaurant AI Agent. M1–M4 приняты. M5 cart/confirmation, DEF-M5-001–008 и M5.2-A1 active-draft protection с unique confirmation session реализованы, automated acceptance PASS, но статус READY ожидает ручного Telegram E2E владельца. Владелец ранее подтвердил M3.2 E2E. Исходные DOCX остаются в ChatGPT Sources.
+Учебный Restaurant AI Agent. M1–M4 приняты. M5 остается IN PROGRESS: M5.2-A2.3 прошел owner LIVE acceptance, M5.2-A3.1 read-only MCP catalog принят владельцем без отдельного подтверждения LIVE acceptance. A3.2+ и M6 не начинались. Исходные DOCX остаются в ChatGPT Sources.
 
 ## Прежде чем продолжать
 
@@ -350,3 +354,26 @@ Google Sheets изменял только пользователь. Codex исп
 - Owner-confirmed LIVE PASS: name/phone/address validation; deterministic text handling; notice; summary and name edit; cancellation with preserved cart; checkout re-entry; stale callback; restart recovery; cancel after recovery. All 29 observed diagnostic records had `llm_called=false` and `final_route=order`.
 - Acceptance limits: cancellation directly from contact edit mode was not separately verified; these diagnostic records do not prove absence of every possible external call; historical PostgreSQL checkpoint PII retention remains a separate production task.
 - No schema/MCP/model/dependency/topology/cart/A1/A2.2 changes. M5 remains IN PROGRESS; A3/A4/A5/M6 have not started. A2.3 is closed and the project is ready for separate planning of the next increment. No commit/push.
+
+## M5.2-A3.1 read-only MCP catalog handoff
+
+**Актуальное решение:** A3.1 ACCEPTED 2026-11-20. Нижеследующие записи сохраняют исторический контекст до closure. D04 исправил protocol fake, D05 сделал category обязательной и непустой. Ранее: targeted 20 PASS, PostgreSQL stdio 1 PASS, full unit 270 PASS (включая OrderDialog 98), lint/scoped format/compile/lock/diff PASS. Приняты риски: 16 baseline format замечаний как technical debt; full regression NOT RUN как residual verification risk; внешние CI/branch protection неизвестны, проверить перед merge/deployment при необходимости. См. `history/047_M5_2_A3_1_owner_acceptance_closure_report.md`.
+
+**Статус:** **IMPLEMENTED / TARGETED TESTED / OWNER ACCEPTANCE NOT RUN**, 2026-11-20.
+
+- Existing read-only chain now exposes six tools: `search_menu`, `list_categories`, `browse_menu`, `get_dish`, `inspect_cart`, `calculate_cart`. New server/client structured DTOs are in `app/menu/contracts.py`; no migration or dependency change.
+- Categories use the existing string as both ID/name, exclude categories without available dishes and include current available count. Browse is category-only, available-only, SQL paginated with default 5/max 20 and stable `lower(name), UUID` ordering; catalog snapshots are intentionally absent.
+- Cart inspection accepts an external bounded array and does one batch lookup. It preserves each input line/order, reports known unavailable with current price, reports missing with null prices, excludes both from `available_subtotal_minor`, and has no `AgentState`, quote, checkout, or mutation semantics. Existing EUR and cart bounds remain authoritative.
+- Compatibility boundary: existing `search_menu`, `get_dish`, `calculate_cart` code paths and response models remain intact. Order/graph/Telegram/checkout/confirmed snapshot code was not touched. A3.2+ and M6 were not started.
+- Verification available on host: menu service 13 PASS; changed-scope Ruff/format, compile and diff checks PASS. MCP client/protocol and integration commands FAIL during collection because only Python 3.10 is executable (`typing.Self` unavailable), the project 3.12 venv target is missing, and MCP dependencies are unavailable to system Python. The test-only PostgreSQL body and Docker are NOT RUN; Docker CLI fails in `snap-confine`. Re-run in restored locked/test-only runtime before owner acceptance.
+- Decision record: ADR-025. Mandatory report/snapshot: `history/043_M5_2_A3_1_readonly_mcp_catalog_report.md` and matching ZIP. Next work requires separate approval; no commit/push.
+
+## M5.2-A3.1 environment recovery handoff
+
+**Статус:** **PARTIALLY VERIFIED / OWNER ACCEPTANCE NOT RUN**, 2026-11-20.
+
+- Изолированный CPython 3.12.12 и frozen environment из `uv.lock` восстановлены в `/tmp`; MCP SDK 2.0.0 доступен. Existing broken `.venv` оставлен без изменений. Docker по-прежнему блокируется host `snap-confine`.
+- Отдельный PostgreSQL 17 `C.UTF-8` cluster и test-only database позволили выполнить real stdio MCP integration: **1 PASS**; migration 0001/0002, synthetic fixtures, cleanup и process exit прошли. Production DB не использовалась.
+- MCP client **4 PASS**, MenuService **13 PASS**, OrderDialog **98 PASS**, full unit **269 PASS / 1 FAIL**. Единственный FAIL локализован в `test_mcp_protocol.py`: fake service получает raw whitespace и возвращает dish, тогда как production `MenuService` нормализует category и real integration возвращает empty page. Это reproducible **TEST DEFECT, LOW**, не application defect.
+- Discovery публикует шесть tools. `list_categories` не требует аргументов; `inspect_cart.items` допускает empty array; browse bounds/default корректны. `browse_menu.category` остается optional в DTO/schema. Missing/empty/whitespace/unknown category fail closed пустой страницей и не раскрывает весь catalog; это **CONTRACT DEVIATION, LOW**, требующее owner decision о required schema.
+- Ruff check/format, compileall, frozen lock check и diff check PASS. Код/контракты/тесты в recovery-задании не менялись. Следующий шаг до acceptance: отдельно разрешить исправление fake service/test и принять решение по required/optional category, затем повторить protocol suite. Отчет: `history/044_M5_2_A3_1_environment_recovery_verification_report.md`. A3.2 и M6 не начинать.

@@ -13,10 +13,16 @@ from pydantic import Field, ValidationError
 
 from app.db.session import create_engine
 from app.menu.contracts import (
+    DEFAULT_BROWSE_LIMIT,
+    MAX_BROWSE_LIMIT,
     MAX_CART_LINES,
     MAX_DIETARY_TAGS,
+    BrowseCategory,
+    BrowseMenuResult,
+    CartInspection,
     CartItemInput,
     CartQuote,
+    CategoryList,
     CategoryFilter,
     DietaryTag,
     DishDetail,
@@ -28,8 +34,13 @@ from app.menu.service import MenuService, MenuServiceError
 
 logger = logging.getLogger(__name__)
 
-CartItems = Annotated[list[CartItemInput], Field(min_length=1, max_length=MAX_CART_LINES)]
+CartItems = Annotated[
+    list[CartItemInput], Field(min_length=1, max_length=MAX_CART_LINES)
+]
+InspectableCartItems = Annotated[list[CartItemInput], Field(max_length=MAX_CART_LINES)]
 DietaryTags = Annotated[list[DietaryTag], Field(max_length=MAX_DIETARY_TAGS)]
+BrowseOffset = Annotated[int, Field(ge=0)]
+BrowseLimit = Annotated[int, Field(ge=1, le=MAX_BROWSE_LIMIT)]
 
 
 @dataclass(frozen=True)
@@ -64,7 +75,8 @@ def create_mcp_server(
         "restaurant-menu",
         instructions=(
             "Read-only restaurant menu tools. Prices are current PostgreSQL values "
-            "in integer minor units; calculate_cart returns subtotal without delivery."
+            "in integer minor units; cart inspection has no side effects and "
+            "calculate_cart returns subtotal without delivery."
         ),
         lifespan=lifespan,
     )
@@ -102,6 +114,23 @@ def create_mcp_server(
         )
 
     @server.tool()
+    async def list_categories(ctx: Context) -> CategoryList:
+        """List categories containing available dishes with current dish counts."""
+        return await execute_tool(service_from(ctx).list_categories())
+
+    @server.tool()
+    async def browse_menu(
+        ctx: Context,
+        category: BrowseCategory,
+        offset: BrowseOffset = 0,
+        limit: BrowseLimit = DEFAULT_BROWSE_LIMIT,
+    ) -> BrowseMenuResult:
+        """Page through available dishes in one category using stable ordering."""
+        return await execute_tool(
+            service_from(ctx).browse_menu(category, offset, limit)
+        )
+
+    @server.tool()
     async def get_dish(dish_id: UUID, ctx: Context) -> DishDetail:
         """Return current details, price, dietary data, and availability for one dish."""
         return await execute_tool(service_from(ctx).get_dish(dish_id))
@@ -110,6 +139,11 @@ def create_mcp_server(
     async def calculate_cart(items: CartItems, ctx: Context) -> CartQuote:
         """Validate all cart items and calculate an EUR subtotal without delivery."""
         return await execute_tool(service_from(ctx).calculate_cart(items))
+
+    @server.tool()
+    async def inspect_cart(items: InspectableCartItems, ctx: Context) -> CartInspection:
+        """Inspect current prices and availability without changing cart state."""
+        return await execute_tool(service_from(ctx).inspect_cart(items))
 
     return server
 

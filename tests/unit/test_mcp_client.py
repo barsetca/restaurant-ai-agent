@@ -36,7 +36,14 @@ class FakeClient:
 
     async def list_tools(self):
         return SimpleNamespace(
-            tools=[SimpleNamespace(name="search_menu"), SimpleNamespace(name="get_dish")]
+            tools=[
+                SimpleNamespace(name="search_menu"),
+                SimpleNamespace(name="get_dish"),
+                SimpleNamespace(name="list_categories"),
+                SimpleNamespace(name="browse_menu"),
+                SimpleNamespace(name="inspect_cart"),
+                SimpleNamespace(name="calculate_cart"),
+            ]
         )
 
     async def call_tool(self, name, arguments):
@@ -109,15 +116,67 @@ async def test_adapter_uses_limited_environment_and_validates_results() -> None:
                 "currency": "EUR",
             }
         ),
+        "list_categories": result(
+            {"categories": [{"id": "main", "name": "main", "available_dish_count": 1}]}
+        ),
+        "browse_menu": result(
+            {
+                "category": "main",
+                "items": [
+                    {
+                        "dish_id": str(dish_id),
+                        "name": "Паста",
+                        "price_minor": 1200,
+                        "currency": "EUR",
+                    }
+                ],
+                "offset": 0,
+                "limit": 5,
+                "has_more": False,
+            }
+        ),
+        "inspect_cart": result(
+            {
+                "items": [
+                    {
+                        "dish_id": str(dish_id),
+                        "name": "Паста",
+                        "quantity": 2,
+                        "unit_price_minor": 1200,
+                        "line_total_minor": 2400,
+                        "available": True,
+                        "missing": False,
+                    }
+                ],
+                "available_subtotal_minor": 2400,
+                "has_unavailable_items": False,
+                "currency": "EUR",
+            }
+        ),
     }
 
     database_url = "postgresql+asyncpg://user:synthetic@db:5432/restaurant_test"
     async with MenuMcpClient(database_url) as adapter:
-        assert await adapter.list_tool_names() == ["get_dish", "search_menu"]
+        assert await adapter.list_tool_names() == [
+            "browse_menu",
+            "calculate_cart",
+            "get_dish",
+            "inspect_cart",
+            "list_categories",
+            "search_menu",
+        ]
         assert (await adapter.search_menu("паста")).items[0].price_minor == 1200
+        assert (await adapter.list_categories()).categories[0].id == "main"
+        assert (await adapter.browse_menu("main")).items[0].dish_id == dish_id
         assert (await adapter.get_dish(dish_id)).available is True
-        quote = await adapter.calculate_cart([CartItemInput(dish_id=dish_id, quantity=2)])
+        quote = await adapter.calculate_cart(
+            [CartItemInput(dish_id=dish_id, quantity=2)]
+        )
         assert quote.subtotal_minor == 2400
+        inspection = await adapter.inspect_cart(
+            [CartItemInput(dish_id=dish_id, quantity=2)]
+        )
+        assert inspection.available_subtotal_minor == 2400
 
     fake = FakeClient.instances[0]
     assert fake.parameters.env == {"DATABASE_URL": database_url, "LOG_LEVEL": "INFO"}
@@ -125,7 +184,9 @@ async def test_adapter_uses_limited_environment_and_validates_results() -> None:
 
 
 @pytest.mark.asyncio
-async def test_adapter_maps_tool_and_protocol_errors_without_logging_secrets(caplog) -> None:
+async def test_adapter_maps_tool_and_protocol_errors_without_logging_secrets(
+    caplog,
+) -> None:
     FakeClient.responses["search_menu"] = result(is_error=True)
     async with MenuMcpClient("postgresql+asyncpg://u:secret-value@db/test") as adapter:
         with pytest.raises(MenuMcpToolError):
@@ -142,7 +203,9 @@ async def test_adapter_maps_tool_and_protocol_errors_without_logging_secrets(cap
 async def test_adapter_enforces_startup_tool_and_shutdown_timeouts() -> None:
     FakeClient.enter_delay = 0.05
     with pytest.raises(MenuMcpTimeoutError, match="startup"):
-        async with MenuMcpClient("postgresql+asyncpg://u:x@db/test", startup_timeout_seconds=0.001):
+        async with MenuMcpClient(
+            "postgresql+asyncpg://u:x@db/test", startup_timeout_seconds=0.001
+        ):
             pass
 
     FakeClient.enter_delay = 0.0

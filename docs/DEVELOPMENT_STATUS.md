@@ -1,6 +1,10 @@
 # Development Status — Restaurant AI Agent
 
-**Дата:** 2026-11-19. **Текущий milestone:** M5 — Cart & Confirmation. **Состояние:** IN PROGRESS / M5.2-A1 IMPLEMENTED / M5.2-A2.1 IMPLEMENTED / M5.2-A2.2 LIVE ACCEPTED / REMAINING A2 SCOPE OPEN. M1–M4 остаются READY. M5 не объявлять READY до завершения согласованного остатка M5.2. M6 не начинать.
+**M5.2-A3.1 — ACCEPTED**, решение владельца от **2026-11-20**. Это owner acceptance, а не подтверждение LIVE acceptance. Принят только A3.1; A3.2 — NOT STARTED. Отчет 047 фиксирует решение и остаточные риски; исторические статусы ниже относятся к моменту соответствующих проверок.
+
+**Проверка D04/D05:** PARTIALLY VERIFIED (2026-11-20): обязательный непустой `browse_menu.category`, protocol/client/MenuService и PostgreSQL integration PASS; full unit 270 PASS. Общий `ruff format --check ... tests` FAIL: 16 ранее существовавших файлов вне scope требуют форматирования. Owner acceptance не проводился. Подробности: `history/045_M5_2_A3_1_contract_correction_final_verification_report.md`.
+
+**Дата:** 2026-11-20. **Текущий milestone:** M5 — Cart & Confirmation. **Состояние:** IN PROGRESS / M5.2-A2.3 LIVE ACCEPTED / M5.2-A3.1 ACCEPTED. M1–M4 остаются READY. A3.1 owner LIVE acceptance не подтвержден; A3.2+ и M6 не начинать без отдельного согласования.
 
 ## Этапы
 
@@ -10,7 +14,7 @@
 | M2 / день 3 | Sheets FAQ → OpenAI embeddings → Qdrant, grounded answer/fallback | DONE / READY | Live Sheets/OpenAI/Qdrant, Telegram E2E и secure logging PASS |
 | M3 / день 4 | LangGraph state, routing, checkpoint | IN PROGRESS / M3.1 READY / M3.2 READY | Official PostgreSQL persistence/restart PASS; manual Telegram E2E M3.2 owner-confirmed PASS |
 | M4 / день 5 | MCP server/client, меню, расчет | DONE / READY | Unit/protocol/PostgreSQL/real stdio/Docker PASS |
-| M5 / день 6 | Корзина, сбор данных, подтверждение | IN PROGRESS / M5.2-A2.2 LIVE ACCEPTED | Owner-confirmed Telegram Tests 10–14; remaining A2 semantics and A3–A5 open |
+| M5 / день 6 | Корзина, сбор данных, подтверждение | IN PROGRESS / A2.3 LIVE ACCEPTED / A3.1 ACCEPTED | Owner acceptance A3.1 2026-11-20; результаты и риски — отчет 047 |
 | M6 / день 7 | Сохранение заказа, Calendar, идемпотентность | NOT STARTED | — |
 | M7 / день 8 | Admin, Sheets Menu/Settings sync, логи, оператор | NOT STARTED | — |
 | M8 / день 9 | Тесты, 15+ evaluation, smoke | NOT STARTED | — |
@@ -537,3 +541,30 @@ Documentation-only review: application code, tests, dependencies и DB schema н
 - Owner-confirmed LIVE acceptance: name/phone/address validation **PASS**; deterministic checkout text handling **PASS**; pre-checkout notice **PASS**; summary и name edit **PASS**; checkout cancellation с сохранением cart **PASS**; повторный checkout после cancellation **PASS**; stale callback protection **PASS**; restart recovery **PASS**; cancel callback после recovery **PASS**. В диагностических логах 29 записей: во всех `llm_called=false`, `final_route=order`.
 - Границы подтверждения: cancellation непосредственно из contact edit mode отдельно не проверялась. Наблюдение диагностических логов не доказывает отсутствие любых внешних вызовов. Retention/удаление PII из historical PostgreSQL checkpoint versions остается отдельной production-задачей.
 - DB schema/migrations, MCP contracts, OpenAI model/schema, dependencies, LangGraph topology, FAQ business logic и cart bounds не менялись. M5 остается **IN PROGRESS**; A3/A4/A5/M6 не начаты. A2.3 закрыт; следующий шаг — отдельное планирование следующего инкремента без автоматического начала реализации. Commit/push не выполнялись.
+
+## M5.2-A3.1 — Read-only MCP Catalog
+
+**Closure 2026-11-20:** владелец принял `list_categories`, `browse_menu`, `inspect_cart` с сохранением существующих MCP tools. D04 исправил protocol fake/test; D05 требует обязательную непустую `browse_menu.category` на MCP boundary. Ранее выполнены: targeted MenuService/client/protocol **20 PASS**, real PostgreSQL stdio **1 PASS**, full unit **270 PASS** (включая OrderDialog **98 PASS** и targeted tests), Ruff lint и scoped format девяти Python-файлов **PASS**, compileall/lock/diff **PASS**. Тесты в closure не повторялись.
+
+- **R-A3.1-01 — ACCEPTED AS TECHNICAL DEBT:** общий Ruff format check остается FAIL на 16 файлах вне A3.1, существовавших на baseline `0213923`; девять Python-файлов A3.1 проходят scoped check.
+- **R-A3.1-02 — ACCEPTED RESIDUAL VERIFICATION RISK:** full regression suite не запускался; перечисленные unit и real PostgreSQL результаты не означают полный regression PASS.
+- **R-A3.1-03 — ACCEPTED WITH FOLLOW-UP BEFORE MERGE/DEPLOYMENT, IF APPLICABLE:** локальный обязательный CI format gate не найден, внешние CI/branch protection неизвестны; общий check может завершиться FAIL.
+
+**Статус:** **IMPLEMENTED / TARGETED TESTED / OWNER ACCEPTANCE NOT RUN**. Дата реализации: **2026-11-20**.
+
+- Добавлены typed read-only MCP tools `list_categories`, `browse_menu`, `inspect_cart` во всех существующих слоях: contracts → PostgreSQL repository → `MenuService` → MCP server/client.
+- `list_categories` возвращает только категории с available dishes, `id=name`, current count и stable alphabetical ordering. `browse_menu` фильтрует unavailable, использует SQL `offset/limit+1`, stable `lower(name), UUID`, default 5 и max 20; пустая/отсутствующая категория дает пустую страницу.
+- `inspect_cart` не читает state и не выполняет mutation. Один `get_many` сохраняет входной порядок; known unavailable сохраняет current name/price/line total, missing сохраняет ID/quantity с null price fields; available subtotal исключает оба вида unavailable. Bounds 20 lines, quantity 1–20 after aggregation и total 100 сохранены; арифметика integer minor units, EUR.
+- Публичное поведение `search_menu`, `get_dish`, `calculate_cart` не менялось. `OrderDialog`, `AgentState`, LangGraph, Telegram, checkout, confirmed snapshots, migrations/schema и dependencies не изменялись. A3.2+ не начинались.
+- Проверки: changed-scope Ruff check/format **PASS**; `git diff --check` **PASS**; `PYTHONPATH=. pytest -q tests/unit/test_menu_service.py` — **13 PASS**; compileall — **PASS**. MCP client/protocol и PostgreSQL integration команды **FAIL during collection** по причине среды: system Python 3.10 не соответствует project Python 3.12 (`typing.Self`) и не имеет MCP dependencies; project venv указывает на отсутствующий `/tmp/.../python3.12`. Тело test-only PostgreSQL integration **NOT RUN**. Docker **NOT RUN**: CLI блокируется `snap-confine`/missing capability. Owner acceptance не заявляется.
+- Следующий шаг: восстановить locked Python 3.12 либо test-only Docker runtime и выполнить MCP client/protocol + `TEST_MCP_DATABASE_URL` integration; затем отдельно согласовать A3.2. M5 остается **IN PROGRESS**, M6 не начинался, commit/push не выполнялись.
+
+## M5.2-A3.1 — Environment recovery verification
+
+**Статус:** **PARTIALLY VERIFIED / OWNER ACCEPTANCE NOT RUN**. Дата проверки: **2026-11-20**.
+
+- Test-only CPython 3.12.12 и 99 frozen packages из `uv.lock`, включая `mcp==2.0.0`, восстановлены в `/tmp`; сломанная project `.venv` не изменялась. Docker остается недоступен из-за `snap-confine`, но для integration поднят отдельный PostgreSQL 17 cluster с `C.UTF-8`, Unix socket и синтетической БД `restaurant_a3_test`.
+- MCP client **PASS: 4**, MenuService **PASS: 13**, OrderDialog **PASS: 98**, real MCP stdio/PostgreSQL integration **PASS: 1**. Full unit: **269 PASS / 1 FAIL**. Ruff check/format, compileall, `uv lock --check` и `git diff --check` — **PASS**.
+- Единственный FAIL: protocol test ожидает пустой результат для whitespace category, но `FakeMenuService` считает raw whitespace truthy. Production path передает значение в `MenuService`, где оно нормализуется в `None`; real PostgreSQL integration подтверждает пустую страницу. Классификация: **TEST DEFECT, LOW**; application defect не подтвержден, тест в этом задании не исправлялся.
+- `browse_menu.category` в DTO/discovery optional; отсутствие, `""` и whitespace нормализуются в `None` и возвращают пустую страницу, unknown category также возвращает пустую страницу. Выдачи всех категорий нет. Это fail-closed **CONTRACT DEVIATION, LOW** относительно формулировки category-specific browse; рекомендуется отдельно согласовать required schema перед owner acceptance.
+- A3.1 не переводился в ACCEPTED. Рекомендуемый следующий шаг: отдельным разрешением исправить protocol test double и согласовать required/optional semantics `browse_menu.category`, затем повторить protocol suite. Отчет: `history/044_M5_2_A3_1_environment_recovery_verification_report.md`.
