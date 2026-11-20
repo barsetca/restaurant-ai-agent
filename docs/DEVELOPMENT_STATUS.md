@@ -1,5 +1,15 @@
 # Development Status — Restaurant AI Agent
 
+**M5.2-A3.2 — ACCEPTED (owner, 2026-11-20).** Владелец принял результаты [051](../history/051_M5_2_A3_2_ui_state_rendering_report.md), [052](../history/052_M5_2_A3_2_verification_closure_report.md), [053](../history/053_M5_2_A3_2_corrective_closure_report.md); это не Telegram LIVE acceptance. Pure UI state/navigation/rendering включает HOME, CATEGORIES, DISH_LIST, DISH_DETAIL, CART; страницы категорий — 10, блюд — 5. `cat:1` использует bounded active/pending registry; pending callbacks и cart mutation callbacks при pending отклоняются. Two-phase prepare/ack реализован как pure contract; legacy checkpoint compatibility подтверждена. По отчету 053: **301 unit PASS**, **1 real PostgreSQL checkpoint PASS**, scoped Ruff/format, compileall и diff check **PASS**; full-repo Ruff baseline подтвержден отчетом 052 и не исправлялся. Telegram LIVE **NOT RUN**, adapter отсутствует; A3.3 **NOT STARTED**. Отчет acceptance 054. Записи ниже исторические и описывают состояние на момент соответствующих проверок.
+
+**A3.2 corrective closure, 2026-11-20:** категории доступны страницами по 10 с отдельным offset; pending render блокирует mutation callbacks active screen. Full unit **301 PASS**, isolated PostgreSQL checkpoint **1 PASS**, scoped Ruff/format, compileall и diff check **PASS**. Telegram runtime отсутствует; owner acceptance ожидается, A3.3 не начат. Отчет 053.
+
+**A3.2 verification closure, 2026-11-20:** isolated PostgreSQL UI checkpoint restart **PASS**, full unit **290 PASS**, scoped Ruff **PASS**; full-repo Ruff failures reproduced on HEAD. Category limit silently hides categories after 38; prior active mutation callback remains resolvable during pending with matching guards (runtime adapter absent). Owner review must resolve these risks; A3.2 is not accepted. Report 052.
+
+**M5.2-A3.2, 2026-11-20 — IMPLEMENTED / READY FOR OWNER REVIEW:** добавлен Telegram-independent `app/catalog_ui` с JSON-safe state, чистой навигацией, renderer пяти экранов, bounded callback registry и двухфазным prepare/ack. `AgentState` расширен только optional `catalog_ui`; handlers, graph execution, OrderDialog, MCP contracts, cart/checkout и schema не менялись. Новые unit **20 PASS**, targeted regression **147 PASS**, full unit **290 PASS**, scoped Ruff/compile/diff **PASS**. Общий Ruff lint/format **FAIL** на существующем baseline вне A3.2 (unused import и 23 files); isolated PostgreSQL checkpoint и LIVE Telegram **NOT RUN**. Отчет/snapshot 051. A3.3 не начат.
+
+**README actualization, 2026-11-20:** корневой README сверен с кодом, конфигурацией и актуальными решениями: шесть MCP tools, границы checkout/LLM, статусы A2.3/A3.1/A3.2 и команды запуска/тестирования. Targeted Menu/MCP tests **20 PASS**, CLI help FAQ sync и DEV seed **PASS**, `git diff --check` **PASS**; приложение и данные не менялись. A3.1 остается ACCEPTED, A3.2 NOT STARTED. Отчет 050.
+
 **Snapshot closure 049:** snapshot форматирования создан с номером 049; настоящий status-файл исключен из ZIP из-за идентификатора реального Telegram-бота по правилам безопасной архивации. Подробности — отчеты 048 и 049.
 
 **Formatting technical debt cleanup, 2026-11-20 — READY FOR OWNER REVIEW:** 16 ранее неформатированных test-файлов приведены к Ruff 0.15.12; нормализованный AST всех 16 совпадает с HEAD. Общий Ruff format и lint PASS, full unit 270 PASS (включая OrderDialog 98), real MCP PostgreSQL integration 1 PASS, compileall и diff check PASS. A3.1 остается ACCEPTED; A3.2 NOT STARTED. Подробнее: отчет 048.
@@ -8,7 +18,7 @@
 
 **Проверка D04/D05:** PARTIALLY VERIFIED (2026-11-20): обязательный непустой `browse_menu.category`, protocol/client/MenuService и PostgreSQL integration PASS; full unit 270 PASS. Общий `ruff format --check ... tests` FAIL: 16 ранее существовавших файлов вне scope требуют форматирования. Owner acceptance не проводился. Подробности: `history/045_M5_2_A3_1_contract_correction_final_verification_report.md`.
 
-**Дата:** 2026-11-20. **Текущий milestone:** M5 — Cart & Confirmation. **Состояние:** IN PROGRESS / M5.2-A2.3 LIVE ACCEPTED / M5.2-A3.1 ACCEPTED. M1–M4 остаются READY. A3.1 owner LIVE acceptance не подтвержден; A3.2+ и M6 не начинать без отдельного согласования.
+**Дата:** 2026-11-20. **Текущий milestone:** M5 — Cart & Confirmation. **Состояние:** IN PROGRESS / M5.2-A2.3 LIVE ACCEPTED / M5.2-A3.1 и A3.2 owner ACCEPTED. M1–M4 остаются READY. A3.1 owner LIVE acceptance не подтвержден; A3.3 и M6 не начинать без отдельного согласования.
 
 ## Этапы
 
@@ -18,7 +28,7 @@
 | M2 / день 3 | Sheets FAQ → OpenAI embeddings → Qdrant, grounded answer/fallback | DONE / READY | Live Sheets/OpenAI/Qdrant, Telegram E2E и secure logging PASS |
 | M3 / день 4 | LangGraph state, routing, checkpoint | IN PROGRESS / M3.1 READY / M3.2 READY | Official PostgreSQL persistence/restart PASS; manual Telegram E2E M3.2 owner-confirmed PASS |
 | M4 / день 5 | MCP server/client, меню, расчет | DONE / READY | Unit/protocol/PostgreSQL/real stdio/Docker PASS |
-| M5 / день 6 | Корзина, сбор данных, подтверждение | IN PROGRESS / A2.3 LIVE ACCEPTED / A3.1 ACCEPTED | Owner acceptance A3.1 2026-11-20; результаты и риски — отчет 047 |
+| M5 / день 6 | Корзина, сбор данных, подтверждение | IN PROGRESS / A2.3 LIVE ACCEPTED / A3.1 и A3.2 ACCEPTED | Owner acceptance A3.1 — отчет 047, A3.2 — отчет 054 |
 | M6 / день 7 | Сохранение заказа, Calendar, идемпотентность | NOT STARTED | — |
 | M7 / день 8 | Admin, Sheets Menu/Settings sync, логи, оператор | NOT STARTED | — |
 | M8 / день 9 | Тесты, 15+ evaluation, smoke | NOT STARTED | — |

@@ -36,3 +36,4 @@ class AgentState(TypedDict, total=False):
     last_action: str | None
     last_referenced_dish_name: str | None
     last_referenced_dish_id: str | None
+    catalog_ui: dict[str, Any]

@@ -17,10 +17,11 @@ Cart/contact/confirmed drafts persist in the official checkpoint. Durable order 
 - `app/agent` compiles one state-aware LangGraph with an official async PostgreSQL checkpointer; same-thread messages are serialized and Telegram update replay is bounded.
 - `app/orders` limits LLM authority to structured intent extraction and implements deterministic cart, contact, quote, and explicit confirmation rules.
 - `app/menu` performs bounded menu search and deterministic integer-minor-unit cart calculation in transaction-level read-only PostgreSQL sessions.
-- `mcp_server` exposes `search_menu`, `get_dish`, and `calculate_cart` over stdio; `app/mcp` is the typed backend client adapter.
+- `app/catalog_ui` defines a Telegram-independent, pure five-screen catalog state, renderer, navigation and bounded callback protocol; it is not connected to the running bot yet.
+- `mcp_server` exposes six read-only tools over stdio: `search_menu`, `get_dish`, `calculate_cart`, `list_categories`, `browse_menu`, and `inspect_cart`; `app/mcp` is the typed backend client adapter.
 - PostgreSQL remains the application database; M2 does not use it as a second FAQ index-state store.
 
-See `docs/ARCHITECTURE.md`, `docs/DATABASE_ARCHITECTURE.md`, and `docs/DECISIONS.md`.
+See [architecture](docs/ARCHITECTURE.md), [database architecture](docs/DATABASE_ARCHITECTURE.md), [decisions](docs/DECISIONS.md), [development status](docs/DEVELOPMENT_STATUS.md), [project handoff](docs/PROJECT_HANDOFF.md), and the [M5.2 design handoff](docs/M5_2_DESIGN_HANDOFF.md). Later decisions supersede older design-handoff text where they differ.
 
 ## Stack
 
@@ -98,12 +99,14 @@ Use stable unique `id` values. Empty rows are skipped, inactive rows are removed
 
 ## Local run
 
-Run PostgreSQL separately, set `DATABASE_URL`, then:
+Run PostgreSQL separately, set `DATABASE_URL` for the host, then:
 
 ```bash
 uv sync --frozen
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
+
+The example `DATABASE_URL` and `QDRANT_URL` use Compose service names (`postgres`, `qdrant`); use host-reachable addresses outside Compose. Apply the migrations below before relying on application tables. If Telegram is enabled, initialize the separate checkpoint schema before starting polling.
 
 `GET /health/live` reports process liveness. `GET /health/ready` returns `200` only when PostgreSQL accepts a query and, when Telegram is enabled, the checkpoint schema is usable. Failures return `503` without exposing the DSN.
 
@@ -114,7 +117,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-This starts `backend`, `postgres`, and `qdrant` with persistent volumes. The credentials file is bind-mounted read-only into the backend when `GOOGLE_CREDENTIALS_PATH` points to a host file; it is not copied into the image. The MCP server is not a separate Compose service: the M5 order dialog starts it on demand through `MenuMcpClient`.
+This starts `backend`, `postgres`, and `qdrant` with persistent volumes. The Compose bind mount uses host path `GOOGLE_CREDENTIALS_PATH` (or `/dev/null` when unset), read-only at the configured container path; credentials are not copied into the image. The MCP server is not a separate Compose service: the M5 order dialog starts it on demand through `MenuMcpClient`.
 
 ```bash
 docker compose config
@@ -196,13 +199,18 @@ The backend-facing `MenuMcpClient` launches that fixed module command with a res
 
 - `search_menu(query?, category?, dietary_tags?)` returns at most 20 available dishes; omitted/blank query browses the menu in deterministic order;
 - `get_dish(dish_id)` returns current details, price, dietary data, and availability;
-- `calculate_cart(items)` aggregates duplicate IDs and returns an EUR `subtotal_minor` without delivery.
+- `calculate_cart(items)` requires a nonempty cart, aggregates duplicate IDs and returns the authoritative current EUR `subtotal_minor` without delivery;
+- `list_categories()` returns categories containing available dishes, counts, and the category string as both ID and name;
+- `browse_menu(category, offset=0, limit=5)` pages available dishes in one required, nonblank category (maximum 120 characters). Offset is non-negative and limit is 1–20. PostgreSQL orders by lowercased name and dish ID, returns `has_more`, and does not create a catalog snapshot. An unknown category returns an empty page;
+- `inspect_cart(items)` accepts an empty list, preserves input order and reports current prices and availability. Missing items retain ID and quantity with null price fields; unavailable items retain their price but do not contribute to `available_subtotal_minor`. It does not create a quote, mutate cart state, or authorize checkout.
 
-Inputs are bounded to 20 cart lines, quantity 1–20 per dish after aggregation, and 100 total units. Missing/unavailable dishes, unsupported currencies, or any invalid item reject the complete calculation.
+Cart inputs are bounded to 20 lines, quantity 1–20 per dish after aggregation, and 100 total units. Missing/unavailable dishes, unsupported currencies, or invalid items reject the complete `calculate_cart` calculation; `inspect_cart` reports missing/unavailable items instead and does not replace strict checkout calculation. Search permits a query up to 200 characters and at most 10 dietary tags.
 
 ## M5 cart and confirmation
 
-The Telegram order flow supports menu browse/search/details, Russian word forms through canonical lookup plus PostgreSQL full-text fallback, atomic multi-item add, ordered multi-action plans for add/set/decrement/remove, clear/view, FAQ interleaving, delivery contacts, ASAP or exact `DD.MM.YYYY HH:MM` delivery time, authoritative quote, and explicit confirmation. The LLM receives only the current non-contact message plus a bounded allowlisted `OrderContext` and returns a typed single proposal or cart plan; it never receives phone/address/full checkpoint data, chooses dish IDs, or mutates/prices the cart. Multi-action dishes are fully resolved and validated before a local candidate cart is committed in one state update.
+The Telegram order flow supports menu search/details, Russian word forms through canonical lookup plus PostgreSQL full-text fallback, atomic multi-item add, ordered multi-action plans for add/set/decrement/remove, clear/view, delivery contacts, ASAP or exact `DD.MM.YYYY HH:MM` delivery time, authoritative quote, and explicit confirmation. The read-only category tools do not yet imply a Telegram catalog UI. The LLM receives the current non-contact message plus a bounded allowlisted `OrderContext` and returns a typed proposal or cart plan; backend code resolves dish IDs and owns cart mutations, prices and validation. Stored contacts and full checkpoint are excluded from the LLM context; a user may nevertheless type personal data in an ordinary non-contact message. Multi-action dishes are resolved and validated before a candidate cart is committed in one state update.
+
+Outside contact collection, bounded semantic clarification and server-side choices support safe continuation. During name, phone, address and time collection or editing, ordinary text is handled only by the deterministic validator for the expected field, without FAQ or LLM calls; the dedicated cancel-checkout callback preserves the cart. Session- and revision-bound callbacks reject stale actions, and the bounded update replay guard prevents duplicate mutations.
 
 `restaurant_settings` must contain a canonical non-negative integer `delivery_fee_minor`. There is no application default. For the approved development value:
 
@@ -258,14 +266,14 @@ TEST_MCP_DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/restaura
   uv run pytest tests/integration/test_m5_order_postgres.py
 ```
 
-Manual Telegram acceptance should use synthetic contact data and cover: `/start` in idle/draft/confirmed; Russian multi-item add including «две брускетты»; one ordered multi-action request such as two independent `set_quantity` changes plus «салат не трогай»; typo «брускету» with explicit numbered selection; multiple ambiguity selections without partial cart mutation; inline ASAP/manual time and future `ДД.ММ.ГГГГ ЧЧ:ММ`; FAQ clarification; summary buttons; editing every field; stale-button rejection; two-step cancel; backend restart recovery; repeated confirmation; new order, second confirmation and preserved first snapshot. Verify afterward that business order/calendar tables remain unchanged.
+Manual Telegram checks should use synthetic contact data and cover `/start` in idle/draft/confirmed; multi-item and ordered multi-action requests; typo and ambiguity clarification without partial mutation; inline ASAP/manual time; FAQ outside contact collection; deterministic handling and cancellation during contact collection; summary editing; stale callbacks and replay; restart recovery; repeated confirmation; and preservation of earlier confirmed snapshots. Verify afterward that business order/calendar tables remain unchanged.
 
 Live Google Sheets/OpenAI/Qdrant verification has passed on synthetic FAQ data, including update and deactivation without restart. Telegram `/start` and FAQ chat flows have also been verified. HTTP diagnostics remain enabled, with centralized redaction of tokens, API keys, authorization headers, URL passwords, and exception tracebacks.
 
 ## Current status
 
-M1–M4 are READY. M5 implementation and DEF-M5-001–008 fixes pass automated acceptance, but M5 remains IN PROGRESS until the owner confirms manual Telegram round 3. No durable order or Calendar side effect exists in M5. PERF-001 and checkpoint PII retention/pruning remain open. See `docs/DEVELOPMENT_STATUS.md` for exact results.
+M1–M4 are accepted/READY. M5 remains **IN PROGRESS**. M5.2-A2.3 passed owner manual Telegram acceptance; M5.2-A3.1 and M5.2-A3.2 are **ACCEPTED** by the owner. Separate A3.1 LIVE acceptance is not confirmed; A3.2 is not wired to Telegram and has no Telegram LIVE acceptance. M5.2-A3.3, M6 and M7 are **NOT STARTED**. A3.2 evidence and acceptance are recorded in [051](history/051_M5_2_A3_2_ui_state_rendering_report.md), [052](history/052_M5_2_A3_2_verification_closure_report.md), [053](history/053_M5_2_A3_2_corrective_closure_report.md) and [054](history/054_M5_2_A3_2_owner_acceptance_report.md). No durable order or Calendar side effect exists in M5. PERF-001 and checkpoint PII retention/pruning remain open. See [development status](docs/DEVELOPMENT_STATUS.md) for evidence and limits.
 
 ## Next milestones
 
-After manual M5 acceptance, the next milestone is M6 durable order persistence and Calendar workflow. Do not start it automatically. Checkpoint retention, distributed multi-instance coordination, Calendar, admin sync, evaluation, and PERF-001 instrumentation remain future work.
+The next topic is a separate owner discussion of M5.2-A3.3 architecture: Telegram delivery, acknowledgement and serialization. A3.3 and later slices do not start automatically. M6 durable orders/Calendar and M7 admin/Menu/Settings sync remain future work. Checkpoint retention, distributed multi-instance coordination, evaluation and PERF-001 instrumentation also remain open. See the [M5.2 design handoff](docs/M5_2_DESIGN_HANDOFF.md) and [project handoff](docs/PROJECT_HANDOFF.md).

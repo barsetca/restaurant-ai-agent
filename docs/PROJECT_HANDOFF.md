@@ -1,5 +1,19 @@
 # Project Handoff — контекст для нового чата
 
+**Последний принятый инкремент: M5.2-A3.2 — ACCEPTED владельцем 2026-11-20**, по отчетам [051](../history/051_M5_2_A3_2_ui_state_rendering_report.md), [052](../history/052_M5_2_A3_2_verification_closure_report.md), [053](../history/053_M5_2_A3_2_corrective_closure_report.md); closure — [054](../history/054_M5_2_A3_2_owner_acceptance_report.md). Это не Telegram LIVE acceptance. A3.1 также ACCEPTED.
+
+Принятые контракты: UI state — optional JSON-safe поле existing LangGraph PostgreSQL checkpoint; renderer возвращает независимый `RenderedScreen DTO`; callback `cat:1` использует short token и bounded server-side registry только active/pending screens. Pending callbacks до acknowledgement не разрешаются; cart mutation callbacks при наличии pending отклоняются. Навигация независима от `draft_revision`. Категории — страницы по 10, блюда — по 5. По отчету 053: 301 unit PASS, isolated PostgreSQL checkpoint 1 PASS; scoped quality checks PASS. Реальная Telegram доставка, per-thread delivery serialization и recovery еще не реализованы.
+
+**Следующий инкремент для обсуждения: M5.2-A3.3 — Telegram Delivery, Acknowledgement & Serialization**, **NOT STARTED**. Его архитектуру и scope необходимо отдельно согласовать с владельцем. Ниже сохранены исторические записи; они описывают состояние на момент соответствующих отчетов.
+
+**A3.2 corrective closure:** category pagination по 10 с независимым checkpoint offset и pending mutation guard реализованы; full unit 301 PASS, isolated PostgreSQL checkpoint 1 PASS. Telegram adapter отсутствует. Owner acceptance ожидается; A3.3 требует отдельного задания. См. отчет 053 и ADR-026.
+
+**A3.2 verification closure:** real isolated PostgreSQL checkpoint test PASS; full unit 290 PASS; full-repo Ruff failures confirmed on HEAD. More than 38 categories are inaccessible without warning; previous active mutation callback remains resolvable while a new render is pending when its guards match. Runtime adapter is absent. Owner review and explicit decision on corrective scope required; see report 052.
+
+**M5.2-A3.2 implemented / owner review pending:** новый `app/catalog_ui` реализует pure state/navigation/rendering/callback/two-phase contracts и не подключен к Telegram. Unit 290 PASS; scoped quality checks PASS. Full-repo Ruff обнаруживает baseline вне scope; DB checkpoint integration и LIVE не запускались. Отчет/snapshot 051. Не начинать A3.3 без отдельного задания и owner acceptance A3.2.
+
+**README actualization:** README обновлен по текущему коду и документам, включая шесть MCP tools и детерминированный checkout; targeted Menu/MCP tests 20 PASS, help FAQ sync и DEV seed PASS. Отчет 050; A3.1 ACCEPTED, A3.2 NOT STARTED. Следующий increment требует отдельного согласования.
+
 **Snapshot closure 049:** архив форматирования создан; `docs/DEVELOPMENT_STATUS.md` исключен из него из-за идентификатора реального Telegram-бота. Полный рабочий документ остается в проекте; см. отчеты 048 и 049.
 
 **Formatting cleanup:** 16 test-файлов отформатированы Ruff 0.15.12, AST эквивалентен HEAD для каждого. Общие Ruff format/lint PASS; unit 270 PASS, OrderDialog 98 PASS, изолированный MCP PostgreSQL integration 1 PASS. Подробности — отчет 048. A3.1 остается ACCEPTED, A3.2 NOT STARTED.
@@ -10,7 +24,7 @@
 
 ## Что это
 
-Учебный Restaurant AI Agent. M1–M4 приняты. M5 остается IN PROGRESS: M5.2-A2.3 прошел owner LIVE acceptance, M5.2-A3.1 read-only MCP catalog принят владельцем без отдельного подтверждения LIVE acceptance. A3.2+ и M6 не начинались. Исходные DOCX остаются в ChatGPT Sources.
+Учебный Restaurant AI Agent. M1–M4 приняты. M5 остается IN PROGRESS: M5.2-A2.3 прошел owner LIVE acceptance, M5.2-A3.1 и A3.2 приняты владельцем без отдельного подтверждения LIVE acceptance A3.1/A3.2. A3.3 и M6 не начинались. Исходные DOCX остаются в ChatGPT Sources.
 
 ## Прежде чем продолжать
 
