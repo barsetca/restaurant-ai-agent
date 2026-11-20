@@ -17,7 +17,11 @@ class FakeOrderDialog:
     async def handle(self, state):
         del state
         self.calls += 1
-        return {"response": f"mutation-{self.calls}", "draft_revision": self.calls, "error_code": None}
+        return {
+            "response": f"mutation-{self.calls}",
+            "draft_revision": self.calls,
+            "error_code": None,
+        }
 
 
 class DestructiveOrderDialog:
@@ -53,12 +57,17 @@ class DestructiveOrderDialog:
 
 async def test_duplicate_and_out_of_order_updates_do_not_repeat_mutation() -> None:
     order = FakeOrderDialog()
-    graph = build_agent_graph(AsyncMock(), checkpointer=InMemorySaver(), order_dialog=order)
+    graph = build_agent_graph(
+        AsyncMock(), checkpointer=InMemorySaver(), order_dialog=order
+    )
     service = AgentService(graph, persistence_required=True)
 
     assert await service.handle_message("one", "thread", update_id=100) == "mutation-1"
     assert await service.handle_message("one", "thread", update_id=100) == "mutation-1"
-    assert await service.handle_message("old", "thread", update_id=99) == "Это сообщение уже обработано."
+    assert (
+        await service.handle_message("old", "thread", update_id=99)
+        == "Это сообщение уже обработано."
+    )
     assert order.calls == 1
 
     state = await graph.aget_state({"configurable": {"thread_id": "thread"}})
@@ -77,14 +86,18 @@ async def test_duplicate_and_out_of_order_updates_do_not_repeat_mutation() -> No
 
 async def test_duplicate_confirm_new_order_update_clears_exactly_once() -> None:
     order = DestructiveOrderDialog()
-    graph = build_agent_graph(AsyncMock(), checkpointer=InMemorySaver(), order_dialog=order)
+    graph = build_agent_graph(
+        AsyncMock(), checkpointer=InMemorySaver(), order_dialog=order
+    )
     service = AgentService(graph, persistence_required=True)
     config = {"configurable": {"thread_id": "destructive-thread"}}
 
     await graph.aupdate_state(
         config,
         {
-            "cart": [{"dish_id": "00000000-0000-0000-0000-000000000001", "quantity": 1}],
+            "cart": [
+                {"dish_id": "00000000-0000-0000-0000-000000000001", "quantity": 1}
+            ],
             "order_stage": "idle",
             "draft_revision": 1,
         },

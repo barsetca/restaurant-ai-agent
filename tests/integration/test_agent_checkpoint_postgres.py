@@ -26,9 +26,13 @@ def _database_url() -> str:
     url = os.getenv("TEST_CHECKPOINT_DATABASE_URL", "")
     if not url:
         pytest.skip("TEST_CHECKPOINT_DATABASE_URL is not set")
-    database_name = urlparse(url.replace("postgresql+asyncpg", "postgresql")).path.lower()
+    database_name = urlparse(
+        url.replace("postgresql+asyncpg", "postgresql")
+    ).path.lower()
     if "test" not in database_name:
-        pytest.fail("TEST_CHECKPOINT_DATABASE_URL must use a database containing 'test'")
+        pytest.fail(
+            "TEST_CHECKPOINT_DATABASE_URL must use a database containing 'test'"
+        )
     return url
 
 

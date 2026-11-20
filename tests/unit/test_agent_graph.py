@@ -5,7 +5,9 @@ from app.agent.service import AgentService, build_agent_service
 from app.rag.answer_service import FALLBACK_MESSAGE
 
 
-def _initial_state(message: str, conversation_id: str | None = "conversation") -> dict[str, object]:
+def _initial_state(
+    message: str, conversation_id: str | None = "conversation"
+) -> dict[str, object]:
     return {
         "user_message": message,
         "intent": "unknown",
@@ -32,8 +34,13 @@ async def test_order_intent_reaches_placeholder() -> None:
     assistant = AsyncMock()
     service = build_agent_service(assistant)
 
-    assert await service.handle_message("Хочу заказать пиццу") == ORDER_PLACEHOLDER_MESSAGE
-    assert await service.handle_message("Добавь две пиццы в корзину") == ORDER_PLACEHOLDER_MESSAGE
+    assert (
+        await service.handle_message("Хочу заказать пиццу") == ORDER_PLACEHOLDER_MESSAGE
+    )
+    assert (
+        await service.handle_message("Добавь две пиццы в корзину")
+        == ORDER_PLACEHOLDER_MESSAGE
+    )
     assistant.answer.assert_not_awaited()
 
 

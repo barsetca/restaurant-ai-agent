@@ -20,14 +20,18 @@ async def test_liveness() -> None:
     assert response.json() == {"status": "ok"}
 
 
-async def test_lifespan_creates_and_disposes_engine_without_telegram(monkeypatch) -> None:
+async def test_lifespan_creates_and_disposes_engine_without_telegram(
+    monkeypatch,
+) -> None:
     engine = Mock()
     engine.dispose = AsyncMock()
     create_engine = Mock(return_value=engine)
     build_telegram_application = Mock()
     build_agent_service = Mock()
     monkeypatch.setattr("app.main.create_engine", create_engine)
-    monkeypatch.setattr("app.main.build_telegram_application", build_telegram_application)
+    monkeypatch.setattr(
+        "app.main.build_telegram_application", build_telegram_application
+    )
     monkeypatch.setattr("app.main.build_agent_service", build_agent_service)
 
     settings = Settings(_env_file=None, telegram_enabled=False, telegram_bot_token=None)
@@ -71,7 +75,9 @@ async def test_telegram_without_faq_builds_safe_agent_once(monkeypatch) -> None:
     checkpoint_ready = AsyncMock(return_value=True)
     monkeypatch.setattr("app.main.create_engine", create_engine)
     monkeypatch.setattr("app.main.build_agent_service", build_agent_service)
-    monkeypatch.setattr("app.main.build_telegram_application", build_telegram_application)
+    monkeypatch.setattr(
+        "app.main.build_telegram_application", build_telegram_application
+    )
     monkeypatch.setattr("app.main.start_polling", start_polling)
     monkeypatch.setattr("app.main.stop_polling", stop_polling)
     monkeypatch.setattr("app.main.build_faq_runtime", build_faq_runtime)
@@ -94,7 +100,10 @@ async def test_telegram_without_faq_builds_safe_agent_once(monkeypatch) -> None:
     build_faq_runtime.assert_not_called()
     assert build_agent_service.call_count == 1
     assert build_agent_service.call_args.args == (None, checkpointer)
-    assert build_agent_service.call_args.kwargs["order_dialog"].__class__.__name__ == "OrderDialog"
+    assert (
+        build_agent_service.call_args.kwargs["order_dialog"].__class__.__name__
+        == "OrderDialog"
+    )
     build_telegram_application.assert_called_once_with(
         "123456:synthetic-token",
         agent_service,

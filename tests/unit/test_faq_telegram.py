@@ -31,7 +31,9 @@ def _agent_service(
         "draft_revision": revision,
         "checkout_session_id": checkout_session_id,
         "pending_destructive_action": (
-            {"confirmation_id": confirmation_id} if confirmation_id is not None else None
+            {"confirmation_id": confirmation_id}
+            if confirmation_id is not None
+            else None
         ),
     }
     return AgentService(graph), graph
@@ -56,7 +58,9 @@ async def test_text_message_is_answered_through_agent_service() -> None:
         chat_id=111,
         reply_text=AsyncMock(),
     )
-    update = SimpleNamespace(message=message, effective_chat=SimpleNamespace(id=111), update_id=987)
+    update = SimpleNamespace(
+        message=message, effective_chat=SimpleNamespace(id=111), update_id=987
+    )
     context = SimpleNamespace(
         application=SimpleNamespace(
             bot_data={
@@ -135,8 +139,7 @@ async def test_delivery_time_callback_is_forwarded_to_same_agent_thread() -> Non
     assert graph.ainvoke.await_args.args[0]["callback_action"] == "time_manual"
     assert graph.ainvoke.await_args.args[0]["callback_revision"] == 4
     assert (
-        graph.ainvoke.await_args.args[0]["callback_confirmation_id"]
-        == "session00001"
+        graph.ainvoke.await_args.args[0]["callback_confirmation_id"] == "session00001"
     )
     callback_message.reply_text.assert_awaited_once()
 
@@ -180,7 +183,9 @@ async def test_confirmation_summary_adds_revision_bound_actions() -> None:
     service, _ = _agent_service(
         "Проверьте заказ:", stage="awaiting_confirmation", revision=7
     )
-    message = SimpleNamespace(text="как можно скорее", chat_id=111, reply_text=AsyncMock())
+    message = SimpleNamespace(
+        text="как можно скорее", chat_id=111, reply_text=AsyncMock()
+    )
     update = SimpleNamespace(
         message=message, effective_chat=SimpleNamespace(id=111), update_id=1004
     )
@@ -195,9 +200,15 @@ async def test_confirmation_summary_adds_revision_bound_actions() -> None:
     )
     await text_message_handler(update, context)
     buttons = message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0]
-    assert [button.text for button in buttons] == ["Подтвердить", "Изменить", "Отменить"]
+    assert [button.text for button in buttons] == [
+        "Подтвердить",
+        "Изменить",
+        "Отменить",
+    ]
     assert [button.callback_data for button in buttons] == [
-        "order:confirm:7", "order:edit:7", "order:cancel:7"
+        "order:confirm:7",
+        "order:edit:7",
+        "order:cancel:7",
     ]
 
 
@@ -240,7 +251,9 @@ async def test_clear_warning_adds_revision_bound_safety_actions() -> None:
         revision=9,
         confirmation_id="session00002",
     )
-    message = SimpleNamespace(text="Очисти корзину", chat_id=111, reply_text=AsyncMock())
+    message = SimpleNamespace(
+        text="Очисти корзину", chat_id=111, reply_text=AsyncMock()
+    )
     update = SimpleNamespace(
         message=message, effective_chat=SimpleNamespace(id=111), update_id=1006
     )
@@ -255,7 +268,10 @@ async def test_clear_warning_adds_revision_bound_safety_actions() -> None:
     )
     await text_message_handler(update, context)
     buttons = message.reply_text.await_args.kwargs["reply_markup"].inline_keyboard[0]
-    assert [button.text for button in buttons] == ["Очистить корзину", "Оставить текущий"]
+    assert [button.text for button in buttons] == [
+        "Очистить корзину",
+        "Оставить текущий",
+    ]
     assert [button.callback_data for button in buttons] == [
         "order:confirm_clear:9:session00002",
         "order:keep_current_order:9:session00002",
@@ -305,14 +321,20 @@ async def test_safe_send_exhausts_connect_retry_without_raising(caplog) -> None:
     target = SimpleNamespace(
         reply_text=AsyncMock(side_effect=httpx.ConnectError("synthetic"))
     )
-    assert await safe_send_reply(target, "private synthetic text", operation="test_send") is False
+    assert (
+        await safe_send_reply(target, "private synthetic text", operation="test_send")
+        is False
+    )
     assert target.reply_text.await_count == 2
     assert "private synthetic text" not in caplog.text
 
 
 async def test_safe_send_does_not_retry_ambiguous_timeout(caplog) -> None:
     target = SimpleNamespace(reply_text=AsyncMock(side_effect=TimedOut("synthetic")))
-    assert await safe_send_reply(target, "private synthetic text", operation="test_send") is False
+    assert (
+        await safe_send_reply(target, "private synthetic text", operation="test_send")
+        is False
+    )
     assert target.reply_text.await_count == 1
     assert "private synthetic text" not in caplog.text
 
@@ -322,12 +344,12 @@ def test_conversation_identity_is_stable_and_chat_specific() -> None:
     same = SimpleNamespace(message=None, effective_chat=SimpleNamespace(id=111))
     other = SimpleNamespace(message=None, effective_chat=SimpleNamespace(id=222))
 
-    assert conversation_id_for_update(first, _HMAC_SECRET) == conversation_id_for_update(
-        same, _HMAC_SECRET
-    )
-    assert conversation_id_for_update(first, _HMAC_SECRET) != conversation_id_for_update(
-        other, _HMAC_SECRET
-    )
+    assert conversation_id_for_update(
+        first, _HMAC_SECRET
+    ) == conversation_id_for_update(same, _HMAC_SECRET)
+    assert conversation_id_for_update(
+        first, _HMAC_SECRET
+    ) != conversation_id_for_update(other, _HMAC_SECRET)
     assert conversation_id_for_update(first, _HMAC_SECRET).startswith("telegram:v1:")
     assert "111" not in conversation_id_for_update(first, _HMAC_SECRET)
 

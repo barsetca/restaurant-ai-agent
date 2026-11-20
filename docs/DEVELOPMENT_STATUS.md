@@ -1,5 +1,9 @@
 # Development Status — Restaurant AI Agent
 
+**Snapshot closure 049:** snapshot форматирования создан с номером 049; настоящий status-файл исключен из ZIP из-за идентификатора реального Telegram-бота по правилам безопасной архивации. Подробности — отчеты 048 и 049.
+
+**Formatting technical debt cleanup, 2026-11-20 — READY FOR OWNER REVIEW:** 16 ранее неформатированных test-файлов приведены к Ruff 0.15.12; нормализованный AST всех 16 совпадает с HEAD. Общий Ruff format и lint PASS, full unit 270 PASS (включая OrderDialog 98), real MCP PostgreSQL integration 1 PASS, compileall и diff check PASS. A3.1 остается ACCEPTED; A3.2 NOT STARTED. Подробнее: отчет 048.
+
 **M5.2-A3.1 — ACCEPTED**, решение владельца от **2026-11-20**. Это owner acceptance, а не подтверждение LIVE acceptance. Принят только A3.1; A3.2 — NOT STARTED. Отчет 047 фиксирует решение и остаточные риски; исторические статусы ниже относятся к моменту соответствующих проверок.
 
 **Проверка D04/D05:** PARTIALLY VERIFIED (2026-11-20): обязательный непустой `browse_menu.category`, protocol/client/MenuService и PostgreSQL integration PASS; full unit 270 PASS. Общий `ruff format --check ... tests` FAIL: 16 ранее существовавших файлов вне scope требуют форматирования. Owner acceptance не проводился. Подробности: `history/045_M5_2_A3_1_contract_correction_final_verification_report.md`.

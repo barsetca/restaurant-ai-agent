@@ -140,7 +140,9 @@ def apply(state, changes):
         ("-Anna", None),
     ],
 )
-def test_checkout_name_validation_is_unicode_safe(raw: str, expected: str | None) -> None:
+def test_checkout_name_validation_is_unicode_safe(
+    raw: str, expected: str | None
+) -> None:
     assert _validate_name(raw) == expected
 
 
@@ -678,7 +680,9 @@ async def test_checkout_notice_is_shown_once_and_not_for_contact_edit() -> None:
         "collecting_edit_time",
     ],
 )
-async def test_cancel_checkout_preserves_cart_and_clears_checkout_data(stage: str) -> None:
+async def test_cancel_checkout_preserves_cart_and_clears_checkout_data(
+    stage: str,
+) -> None:
     current = dish("Рататуй")
     order = dialog(FakeMenu([current]))
     cart = [{"dish_id": str(current.dish_id), "quantity": 2}]
@@ -770,7 +774,9 @@ async def test_old_checkout_session_is_stale_after_cancel_and_reentry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_checkout_session_survives_checkpoint_restart_for_current_callback() -> None:
+async def test_checkout_session_survives_checkpoint_restart_for_current_callback() -> (
+    None
+):
     current = dish("Рататуй")
     saver = InMemorySaver()
     config = {"configurable": {"thread_id": "checkout-session-restart"}}

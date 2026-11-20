@@ -1,5 +1,9 @@
 # Project Handoff — контекст для нового чата
 
+**Snapshot closure 049:** архив форматирования создан; `docs/DEVELOPMENT_STATUS.md` исключен из него из-за идентификатора реального Telegram-бота. Полный рабочий документ остается в проекте; см. отчеты 048 и 049.
+
+**Formatting cleanup:** 16 test-файлов отформатированы Ruff 0.15.12, AST эквивалентен HEAD для каждого. Общие Ruff format/lint PASS; unit 270 PASS, OrderDialog 98 PASS, изолированный MCP PostgreSQL integration 1 PASS. Подробности — отчет 048. A3.1 остается ACCEPTED, A3.2 NOT STARTED.
+
 **M5.2-A3.1 ACCEPTED:** решение владельца от 2026-11-20, документальное закрытие — отчет 047. Owner LIVE acceptance отдельно не подтвержден. Реализация остается в текущем рабочем дереве; commit/push не выполнялись. A3.2 — NOT STARTED; перед следующим этапом отдельно согласовать scope и Codex prompt. ADR-025 и A3 design handoff сохраняются; отчеты 043–047 фиксируют реализацию и проверки.
 
 **Актуализация D04/D05:** `browse_menu.category` обязателен и непустой; protocol и real PostgreSQL integration PASS, full unit 270 PASS. Общий Ruff format check выявил 16 ранее неформатированных файлов вне scope. Статус PARTIALLY VERIFIED, owner acceptance не проводился; см. отчет 045.

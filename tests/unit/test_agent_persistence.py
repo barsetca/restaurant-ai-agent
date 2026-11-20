@@ -64,7 +64,9 @@ async def test_current_faq_error_never_returns_previous_response() -> None:
         await service.handle_message("Первый вопрос", "thread-error")
         == "Старый успешный ответ"
     )
-    assert await service.handle_message("Новый вопрос", "thread-error") == FALLBACK_MESSAGE
+    assert (
+        await service.handle_message("Новый вопрос", "thread-error") == FALLBACK_MESSAGE
+    )
 
     state = await graph.aget_state(_config("thread-error"))
     assert state.values["response"] == FALLBACK_MESSAGE
@@ -127,7 +129,9 @@ async def test_same_thread_is_serialized_without_blocking_other_threads() -> Non
 
         async def ainvoke(self, state, config=None):
             thread_id = config["configurable"]["thread_id"]
-            self.active_by_thread[thread_id] = self.active_by_thread.get(thread_id, 0) + 1
+            self.active_by_thread[thread_id] = (
+                self.active_by_thread.get(thread_id, 0) + 1
+            )
             self.max_by_thread[thread_id] = max(
                 self.max_by_thread.get(thread_id, 0),
                 self.active_by_thread[thread_id],

@@ -7,12 +7,19 @@ from app.rag.sync_service import EmptyFaqSourceError, FaqSyncService
 
 
 def _entry(source_id: str, answer: str = "Ответ") -> FaqEntry:
-    return FaqEntry(source_id=source_id, category="general", question=f"Вопрос {source_id}", answer=answer)
+    return FaqEntry(
+        source_id=source_id,
+        category="general",
+        question=f"Вопрос {source_id}",
+        answer=answer,
+    )
 
 
 def _dependencies(entries, existing):
     source = AsyncMock()
-    source.load.return_value = FaqSourceResult(entries=entries, inactive=1, skipped_empty=2)
+    source.load.return_value = FaqSourceResult(
+        entries=entries, inactive=1, skipped_empty=2
+    )
     embeddings = AsyncMock()
     embeddings.model_name = "test-model"
     embeddings.dimensions = 3
@@ -68,7 +75,12 @@ async def test_sync_adds_updates_removes_and_skips_unchanged() -> None:
 
     result = await FaqSyncService(source, embeddings, store).sync()
 
-    assert (result.added, result.updated, result.removed, result.skipped_unchanged) == (1, 1, 1, 1)
+    assert (result.added, result.updated, result.removed, result.skipped_unchanged) == (
+        1,
+        1,
+        1,
+        1,
+    )
     embeddings.embed_documents.assert_awaited_once()
     upserted = store.upsert.await_args.args[0]
     assert {entry.source_id for entry in upserted} == {"updated", "added"}

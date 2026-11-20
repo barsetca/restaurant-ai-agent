@@ -80,12 +80,16 @@ def test_google_source_uses_read_only_scope_and_expected_headers(monkeypatch) ->
         calls["auth"] = kwargs
         return Client()
 
-    monkeypatch.setattr("app.rag.sheets_source.gspread.service_account", service_account)
+    monkeypatch.setattr(
+        "app.rag.sheets_source.gspread.service_account", service_account
+    )
     source = GoogleSheetsFaqSource("sheet-id", "/run/secrets/google.json")
     result = source._load_sync()
 
     assert result.entries[0].source_id == "hours"
-    assert calls["auth"]["scopes"] == ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    assert calls["auth"]["scopes"] == [
+        "https://www.googleapis.com/auth/spreadsheets.readonly"
+    ]
     assert calls["spreadsheet_id"] == "sheet-id"
     assert calls["worksheet"] == "FAQ"
     assert calls["records"]["expected_headers"] == [

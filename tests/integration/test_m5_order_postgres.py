@@ -25,7 +25,9 @@ def _database_url() -> str:
     url = os.getenv("TEST_MCP_DATABASE_URL", "")
     if not url:
         pytest.skip("TEST_MCP_DATABASE_URL is not set")
-    database_name = urlparse(url.replace("postgresql+asyncpg", "postgresql")).path.lower()
+    database_name = urlparse(
+        url.replace("postgresql+asyncpg", "postgresql")
+    ).path.lower()
     if "test" not in database_name:
         pytest.fail("TEST_MCP_DATABASE_URL must use a database containing 'test'")
     return url
@@ -53,7 +55,9 @@ class Faq:
 
 
 @pytest.mark.integration
-async def test_m5_real_mcp_settings_checkpoint_and_replay_without_side_effects() -> None:
+async def test_m5_real_mcp_settings_checkpoint_and_replay_without_side_effects() -> (
+    None
+):
     database_url = _database_url()
     engine = create_async_engine(database_url)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -64,7 +68,9 @@ async def test_m5_real_mcp_settings_checkpoint_and_replay_without_side_effects()
 
     async with sessions() as session:
         previous_setting = await session.scalar(
-            select(RestaurantSetting.value).where(RestaurantSetting.key == DELIVERY_FEE_KEY)
+            select(RestaurantSetting.value).where(
+                RestaurantSetting.key == DELIVERY_FEE_KEY
+            )
         )
         session.add(
             MenuItem(
@@ -101,7 +107,9 @@ async def test_m5_real_mcp_settings_checkpoint_and_replay_without_side_effects()
             assert "Добавлено" in await service.handle_message(
                 "добавь тестовое блюдо", thread_id, update_id=700
             )
-            assert "Корзина" in await service.handle_message("корзина", thread_id, update_id=701)
+            assert "Корзина" in await service.handle_message(
+                "корзина", thread_id, update_id=701
+            )
             assert "Как вас зовут" in await service.handle_message(
                 "давай оформим", thread_id, update_id=702
             )
@@ -182,25 +190,36 @@ async def test_m5_real_mcp_settings_checkpoint_and_replay_without_side_effects()
             failed_target = SimpleNamespace(
                 reply_text=AsyncMock(side_effect=httpx.ConnectError("synthetic"))
             )
-            assert await safe_send_reply(
-                failed_target, confirmed.text, operation="integration_confirm"
-            ) is False
+            assert (
+                await safe_send_reply(
+                    failed_target, confirmed.text, operation="integration_confirm"
+                )
+                is False
+            )
             after_failed_send = await graph.aget_state(
                 {"configurable": {"thread_id": thread_id}}
             )
             assert after_failed_send.values["confirmed_order"] == first_confirmed
 
-            assert await service.handle_message(
-                "Подтверждаю", thread_id, update_id=713
-            ) == CONFIRMED_MESSAGE
-            replayed = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            assert (
+                await service.handle_message("Подтверждаю", thread_id, update_id=713)
+                == CONFIRMED_MESSAGE
+            )
+            replayed = await graph.aget_state(
+                {"configurable": {"thread_id": thread_id}}
+            )
             assert replayed.values["confirmed_order"] == first_confirmed
 
-            restarted_graph = build_agent_graph(Faq(), checkpointer=saver, order_dialog=dialog)
+            restarted_graph = build_agent_graph(
+                Faq(), checkpointer=saver, order_dialog=dialog
+            )
             restarted_service = AgentService(restarted_graph, persistence_required=True)
-            assert await restarted_service.handle_message(
-                "Подтверждаю", thread_id, update_id=714
-            ) == CONFIRMED_MESSAGE
+            assert (
+                await restarted_service.handle_message(
+                    "Подтверждаю", thread_id, update_id=714
+                )
+                == CONFIRMED_MESSAGE
+            )
             after_restart = await restarted_graph.aget_state(
                 {"configurable": {"thread_id": thread_id}}
             )
@@ -212,22 +231,38 @@ async def test_m5_real_mcp_settings_checkpoint_and_replay_without_side_effects()
             assert "Добавлено" in await restarted_service.handle_message(
                 "добавь тестовое блюдо", thread_id, update_id=716
             )
-            await restarted_service.handle_message("давай оформим", thread_id, update_id=717)
-            await restarted_service.handle_message("Петр Тестов", thread_id, update_id=718)
-            await restarted_service.handle_message("+34600000002", thread_id, update_id=719)
-            await restarted_service.handle_message("Calle Sintética 20", thread_id, update_id=720)
-            await restarted_service.handle_message("как можно скорее", thread_id, update_id=721)
-            assert await restarted_service.handle_message(
-                "Подтверждаю", thread_id, update_id=722
-            ) == CONFIRMED_MESSAGE
+            await restarted_service.handle_message(
+                "давай оформим", thread_id, update_id=717
+            )
+            await restarted_service.handle_message(
+                "Петр Тестов", thread_id, update_id=718
+            )
+            await restarted_service.handle_message(
+                "+34600000002", thread_id, update_id=719
+            )
+            await restarted_service.handle_message(
+                "Calle Sintética 20", thread_id, update_id=720
+            )
+            await restarted_service.handle_message(
+                "как можно скорее", thread_id, update_id=721
+            )
+            assert (
+                await restarted_service.handle_message(
+                    "Подтверждаю", thread_id, update_id=722
+                )
+                == CONFIRMED_MESSAGE
+            )
             second_state = await restarted_graph.aget_state(
                 {"configurable": {"thread_id": thread_id}}
             )
             assert second_state.values["confirmed_order_archive"] == [first_confirmed]
-            assert second_state.values["confirmed_order"]["confirmation_key"] != (
-                first_confirmed["confirmation_key"]
+            assert (
+                second_state.values["confirmed_order"]["confirmation_key"]
+                != (first_confirmed["confirmation_key"])
             )
-            assert second_state.values["confirmed_order"]["customer_name"] == "Петр Тестов"
+            assert (
+                second_state.values["confirmed_order"]["customer_name"] == "Петр Тестов"
+            )
             assert "Иван Тестов" not in extractor.messages
             assert "+34600000001" not in extractor.messages
             await saver.adelete_thread(thread_id)
@@ -236,7 +271,9 @@ async def test_m5_real_mcp_settings_checkpoint_and_replay_without_side_effects()
             await session.execute(delete(MenuItem).where(MenuItem.id == item_id))
             if previous_setting is None:
                 await session.execute(
-                    delete(RestaurantSetting).where(RestaurantSetting.key == DELIVERY_FEE_KEY)
+                    delete(RestaurantSetting).where(
+                        RestaurantSetting.key == DELIVERY_FEE_KEY
+                    )
                 )
             else:
                 await session.merge(

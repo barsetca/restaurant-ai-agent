@@ -56,8 +56,18 @@ async def test_qdrant_sync_update_delete_and_semantic_search():
     cleanup_client = AsyncQdrantClient(url=url)
     source = MutableSource(
         [
-            FaqEntry(source_id="hours", category="hours", question="Когда вы закрываетесь?", answer="В 22:00"),
-            FaqEntry(source_id="delivery", category="delivery", question="Есть доставка?", answer="Да"),
+            FaqEntry(
+                source_id="hours",
+                category="hours",
+                question="Когда вы закрываетесь?",
+                answer="В 22:00",
+            ),
+            FaqEntry(
+                source_id="delivery",
+                category="delivery",
+                question="Есть доставка?",
+                answer="Да",
+            ),
         ]
     )
     embeddings = SemanticFakeEmbeddings()
@@ -70,7 +80,12 @@ async def test_qdrant_sync_update_delete_and_semantic_search():
         assert embeddings.document_calls == 1
 
         source.entries = [
-            FaqEntry(source_id="hours", category="hours", question="Когда вы закрываетесь?", answer="В 23:00")
+            FaqEntry(
+                source_id="hours",
+                category="hours",
+                question="Когда вы закрываетесь?",
+                answer="В 23:00",
+            )
         ]
         changed = await service.sync()
         assert (changed.updated, changed.removed) == (1, 1)
@@ -110,7 +125,14 @@ async def test_qdrant_empty_source_requires_opt_in_and_preserves_metadata():
     store = QdrantFaqStore(url, collection, timeout_seconds=10)
     cleanup_client = AsyncQdrantClient(url=url)
     source = MutableSource(
-        [FaqEntry(source_id="hours", category="hours", question="Когда вы открыты?", answer="С 10:00")]
+        [
+            FaqEntry(
+                source_id="hours",
+                category="hours",
+                question="Когда вы открыты?",
+                answer="С 10:00",
+            )
+        ]
     )
     embeddings = SemanticFakeEmbeddings()
     service = FaqSyncService(source, embeddings, store)

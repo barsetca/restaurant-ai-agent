@@ -13,7 +13,9 @@ OPENAI_KEY = "sk-proj-synthetic_openai_key_value_12345"
 CUSTOM_SECRET = "synthetic-database-password"
 
 
-def _format(record: logging.LogRecord, redactor: SecretRedactor | None = None) -> dict[str, object]:
+def _format(
+    record: logging.LogRecord, redactor: SecretRedactor | None = None
+) -> dict[str, object]:
     (redactor or SecretRedactor()).redact_record(record)
     return json.loads(JsonFormatter().format(record))
 
@@ -131,7 +133,9 @@ def test_redacts_authorization_mapping_and_url_password() -> None:
 
 
 @pytest.mark.anyio
-async def test_telegram_http_timing_log_has_safe_diagnostics(caplog: pytest.LogCaptureFixture) -> None:
+async def test_telegram_http_timing_log_has_safe_diagnostics(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     request = httpx.Request(
         "POST",
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",

@@ -36,9 +36,13 @@ def _test_database_url() -> str:
     url = os.getenv("TEST_DATABASE_URL", "")
     if not url:
         pytest.skip("TEST_DATABASE_URL is not set")
-    database_name = urlparse(url.replace("postgresql+asyncpg", "postgresql")).path.lower()
+    database_name = urlparse(
+        url.replace("postgresql+asyncpg", "postgresql")
+    ).path.lower()
     if "test" not in database_name:
-        pytest.fail("TEST_DATABASE_URL must point to a database whose name contains 'test'")
+        pytest.fail(
+            "TEST_DATABASE_URL must point to a database whose name contains 'test'"
+        )
     return url
 
 
@@ -67,6 +71,7 @@ async def _inspect_schema(url: str) -> None:
     engine = create_async_engine(url)
     try:
         async with engine.connect() as connection:
+
             def inspect_sync(sync_connection) -> None:
                 inspector = inspect(sync_connection)
                 all_tables = set(inspector.get_table_names())
@@ -82,19 +87,33 @@ async def _inspect_schema(url: str) -> None:
                     (tuple(fk["constrained_columns"]), fk["referred_table"])
                     for fk in inspector.get_foreign_keys("order_items")
                 }
-                assert order_item_fks == {(('menu_item_id',), 'menu_items'), (('order_id',), 'orders')}
+                assert order_item_fks == {
+                    (("menu_item_id",), "menu_items"),
+                    (("order_id",), "orders"),
+                }
                 calendar_fks = inspector.get_foreign_keys("calendar_jobs")
                 assert len(calendar_fks) == 1
                 assert calendar_fks[0]["referred_table"] == "orders"
 
-                order_unique = {tuple(item["column_names"]) for item in inspector.get_unique_constraints("orders")}
-                menu_unique = {tuple(item["column_names"]) for item in inspector.get_unique_constraints("menu_items")}
+                order_unique = {
+                    tuple(item["column_names"])
+                    for item in inspector.get_unique_constraints("orders")
+                }
+                menu_unique = {
+                    tuple(item["column_names"])
+                    for item in inspector.get_unique_constraints("menu_items")
+                }
                 assert ("confirmation_key",) in order_unique
                 assert ("source_row_id",) in menu_unique
 
                 check_names = {
                     check["name"]
-                    for table in ("menu_items", "orders", "order_items", "calendar_jobs")
+                    for table in (
+                        "menu_items",
+                        "orders",
+                        "order_items",
+                        "calendar_jobs",
+                    )
                     for check in inspector.get_check_constraints(table)
                 }
                 assert {

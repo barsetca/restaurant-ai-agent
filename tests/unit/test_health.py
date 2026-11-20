@@ -56,7 +56,9 @@ async def test_readiness_when_database_is_unavailable(monkeypatch) -> None:
     assert "postgresql+asyncpg" not in response.text
 
 
-async def test_readiness_reports_checkpoint_dependency_without_secrets(monkeypatch) -> None:
+async def test_readiness_reports_checkpoint_dependency_without_secrets(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         "app.api.health.database_is_ready",
         AsyncMock(return_value=True),
