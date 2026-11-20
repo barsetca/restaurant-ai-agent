@@ -1,6 +1,6 @@
 from typing import Any, Literal, TypedDict
 
-AgentIntent = Literal["faq", "order", "unknown", "replay"]
+AgentIntent = Literal["faq", "order", "unknown", "replay", "catalog"]
 
 
 class AgentState(TypedDict, total=False):
@@ -37,3 +37,4 @@ class AgentState(TypedDict, total=False):
     last_referenced_dish_name: str | None
     last_referenced_dish_id: str | None
     catalog_ui: dict[str, Any]
+    catalog_transition: dict[str, Any] | None

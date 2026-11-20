@@ -119,6 +119,57 @@ async def test_order_and_unknown_routes_remain_unchanged_with_checkpointer() -> 
     assistant.answer.assert_not_awaited()
 
 
+async def test_delivery_is_serialized_for_same_thread_and_parallel_for_different_threads() -> (
+    None
+):
+    import asyncio
+
+    graph = AsyncMock()
+    graph.ainvoke.return_value = {"response": "ok"}
+    service = AgentService(graph, persistence_required=True)
+    active = 0
+    maximum = 0
+
+    async def deliver(_result):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        await asyncio.sleep(0.02)
+        active -= 1
+
+    await asyncio.gather(
+        service.handle_message_result_and_deliver("a", "same", 1, deliver),
+        service.handle_message_result_and_deliver("b", "same", 2, deliver),
+    )
+    assert maximum == 1
+    maximum = 0
+    await asyncio.gather(
+        service.handle_message_result_and_deliver("a", "one", 3, deliver),
+        service.handle_message_result_and_deliver("b", "two", 4, deliver),
+    )
+    assert maximum == 2
+
+
+async def test_delivery_exception_releases_thread_lock() -> None:
+    import asyncio
+
+    graph = AsyncMock()
+    graph.ainvoke.return_value = {"response": "ok"}
+    service = AgentService(graph, persistence_required=True)
+
+    async def failed(_result):
+        raise RuntimeError("synthetic delivery")
+
+    with pytest.raises(RuntimeError, match="synthetic delivery"):
+        await service.handle_message_result_and_deliver("first", "thread", 1, failed)
+    await asyncio.wait_for(
+        service.handle_message_result_and_deliver(
+            "second", "thread", 2, AsyncMock(return_value=True)
+        ),
+        timeout=0.5,
+    )
+
+
 async def test_same_thread_is_serialized_without_blocking_other_threads() -> None:
     class ConcurrentGraph:
         def __init__(self) -> None:

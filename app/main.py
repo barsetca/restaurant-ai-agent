@@ -90,6 +90,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     app.state.agent_service,
                     thread_id_hmac_secret=app_settings.thread_id_hmac_secret,
                     thread_id_hmac_key_id=app_settings.thread_id_hmac_key_id,
+                    catalog_menu_factory=menu_factory,
                 )
                 app.state.telegram_application = telegram_application
                 await start_polling(telegram_application)

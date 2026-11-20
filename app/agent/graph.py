@@ -124,6 +124,8 @@ def build_agent_graph(
         replay, response, error_code = replay_result(state)
         if replay:
             return {"intent": "replay", "response": response, "error_code": error_code}
+        if isinstance(state.get("catalog_transition"), dict):
+            return {"intent": "catalog"}
         if order_dialog is not None:
             intent, proposal = await order_dialog.classify(state)
             changes: dict[str, Any] = {
@@ -181,7 +183,10 @@ def build_agent_graph(
         if order_dialog is None:
             return await order_placeholder_node(state)
         changes = await order_dialog.handle(state)
-        if state.get("pending_clarification") and "pending_clarification" not in changes:
+        if (
+            state.get("pending_clarification")
+            and "pending_clarification" not in changes
+        ):
             changes["pending_clarification"] = None
         return record_update(state, changes)
 
@@ -201,7 +206,34 @@ def build_agent_graph(
         return {
             "response": state.get("response") or FALLBACK_MESSAGE,
             "error_code": state.get("error_code"),
+            "catalog_transition": None,
         }
+
+    async def catalog_node(state: AgentState) -> dict[str, Any]:
+        transition = state.get("catalog_transition")
+        if not isinstance(transition, dict):
+            return {"response": FALLBACK_MESSAGE, "error_code": "catalog_invalid"}
+        changes: dict[str, Any] = {
+            "catalog_ui": transition,
+            "catalog_transition": None,
+            "response": "Каталог обновлён.",
+            "error_code": None,
+        }
+        update_id = state.get("update_id")
+        if update_id is not None:
+            processed = list(state.get("processed_updates", []))
+            processed.append(
+                {
+                    "update_id": update_id,
+                    "response": changes["response"],
+                    "error_code": None,
+                }
+            )
+            changes["processed_updates"] = processed[-32:]
+            changes["highest_update_id"] = max(
+                update_id, state.get("highest_update_id") or update_id
+            )
+        return changes
 
     async def select_route(state: AgentState) -> AgentIntent:
         return state["intent"]
@@ -212,6 +244,7 @@ def build_agent_graph(
     workflow.add_node("order", order_node)
     workflow.add_node("unknown", unknown_node)
     workflow.add_node("replay", replay_node)
+    workflow.add_node("catalog", catalog_node)
     workflow.add_edge(START, "route")
     workflow.add_conditional_edges(
         "route",
@@ -221,10 +254,12 @@ def build_agent_graph(
             "order": "order",
             "unknown": "unknown",
             "replay": "replay",
+            "catalog": "catalog",
         },
     )
     workflow.add_edge("faq", END)
     workflow.add_edge("order", END)
     workflow.add_edge("unknown", END)
     workflow.add_edge("replay", END)
+    workflow.add_edge("catalog", END)
     return workflow.compile(checkpointer=checkpointer)

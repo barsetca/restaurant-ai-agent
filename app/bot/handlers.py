@@ -11,6 +11,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from app.agent.service import AgentResponse, AgentService
+from app.bot.catalog_runtime import run_catalog_update
+from app.catalog_ui.callbacks import decode_callback
 from app.rag.answer_service import FALLBACK_MESSAGE
 
 logger = logging.getLogger(__name__)
@@ -36,10 +38,22 @@ def _response_markup(result: AgentResponse) -> InlineKeyboardMarkup | None:
         return None
     if result.clarification_id is not None:
         return InlineKeyboardMarkup(
-            [[
-                _button("Показать корзину", "clarify_view_cart", revision, result.clarification_id),
-                _button("Перейти к оформлению", "clarify_checkout", revision, result.clarification_id),
-            ]]
+            [
+                [
+                    _button(
+                        "Показать корзину",
+                        "clarify_view_cart",
+                        revision,
+                        result.clarification_id,
+                    ),
+                    _button(
+                        "Перейти к оформлению",
+                        "clarify_checkout",
+                        revision,
+                        result.clarification_id,
+                    ),
+                ]
+            ]
         )
     checkout_session_id = result.checkout_session_id
     if (
@@ -49,36 +63,71 @@ def _response_markup(result: AgentResponse) -> InlineKeyboardMarkup | None:
         return InlineKeyboardMarkup(
             [
                 [
-                    _button("Как можно скорее", "time_asap", revision, checkout_session_id),
-                    _button("Выбрать дату и время", "time_manual", revision, checkout_session_id),
+                    _button(
+                        "Как можно скорее", "time_asap", revision, checkout_session_id
+                    ),
+                    _button(
+                        "Выбрать дату и время",
+                        "time_manual",
+                        revision,
+                        checkout_session_id,
+                    ),
                 ],
-                [_button("Отменить оформление", "cancel_checkout", revision, checkout_session_id)],
+                [
+                    _button(
+                        "Отменить оформление",
+                        "cancel_checkout",
+                        revision,
+                        checkout_session_id,
+                    )
+                ],
             ]
         )
-    if result.order_stage in {
-        "collecting_name",
-        "collecting_phone",
-        "collecting_address",
-        "collecting_edit_name",
-        "collecting_edit_phone",
-        "collecting_edit_address",
-    } and checkout_session_id is not None:
+    if (
+        result.order_stage
+        in {
+            "collecting_name",
+            "collecting_phone",
+            "collecting_address",
+            "collecting_edit_name",
+            "collecting_edit_phone",
+            "collecting_edit_address",
+        }
+        and checkout_session_id is not None
+    ):
         return InlineKeyboardMarkup(
-            [[_button("Отменить оформление", "cancel_checkout", revision, checkout_session_id)]]
+            [
+                [
+                    _button(
+                        "Отменить оформление",
+                        "cancel_checkout",
+                        revision,
+                        checkout_session_id,
+                    )
+                ]
+            ]
         )
     if result.order_stage == "awaiting_confirmation":
         return InlineKeyboardMarkup(
-            [[
-                _button("Подтвердить", "confirm", revision),
-                _button("Изменить", "edit", revision),
-                _button("Отменить", "cancel", revision),
-            ]]
+            [
+                [
+                    _button("Подтвердить", "confirm", revision),
+                    _button("Изменить", "edit", revision),
+                    _button("Отменить", "cancel", revision),
+                ]
+            ]
         )
     if result.order_stage == "awaiting_edit_choice":
         return InlineKeyboardMarkup(
             [
-                [_button("Корзина", "edit_cart", revision), _button("Имя", "edit_name", revision)],
-                [_button("Телефон", "edit_phone", revision), _button("Адрес", "edit_address", revision)],
+                [
+                    _button("Корзина", "edit_cart", revision),
+                    _button("Имя", "edit_name", revision),
+                ],
+                [
+                    _button("Телефон", "edit_phone", revision),
+                    _button("Адрес", "edit_address", revision),
+                ],
                 [_button("Время", "edit_time", revision)],
                 [_button("Вернуться к итогу", "return_summary", revision)],
             ]
@@ -92,30 +141,53 @@ def _response_markup(result: AgentResponse) -> InlineKeyboardMarkup | None:
         if confirmation_id is None:
             return None
         return InlineKeyboardMarkup(
-            [[
-                _button("Да, отменить", "cancel_yes", revision, confirmation_id),
-                _button("Вернуться", "cancel_back", revision, confirmation_id),
-            ]]
+            [
+                [
+                    _button("Да, отменить", "cancel_yes", revision, confirmation_id),
+                    _button("Вернуться", "cancel_back", revision, confirmation_id),
+                ]
+            ]
         )
     if result.order_stage == "awaiting_new_order_confirmation":
         confirmation_id = result.destructive_confirmation_id
         if confirmation_id is None:
             return None
         return InlineKeyboardMarkup(
-            [[
-                _button("Начать новый заказ", "confirm_new_order", revision, confirmation_id),
-                _button("Оставить текущий", "keep_current_order", revision, confirmation_id),
-            ]]
+            [
+                [
+                    _button(
+                        "Начать новый заказ",
+                        "confirm_new_order",
+                        revision,
+                        confirmation_id,
+                    ),
+                    _button(
+                        "Оставить текущий",
+                        "keep_current_order",
+                        revision,
+                        confirmation_id,
+                    ),
+                ]
+            ]
         )
     if result.order_stage == "awaiting_clear_confirmation":
         confirmation_id = result.destructive_confirmation_id
         if confirmation_id is None:
             return None
         return InlineKeyboardMarkup(
-            [[
-                _button("Очистить корзину", "confirm_clear", revision, confirmation_id),
-                _button("Оставить текущий", "keep_current_order", revision, confirmation_id),
-            ]]
+            [
+                [
+                    _button(
+                        "Очистить корзину", "confirm_clear", revision, confirmation_id
+                    ),
+                    _button(
+                        "Оставить текущий",
+                        "keep_current_order",
+                        revision,
+                        confirmation_id,
+                    ),
+                ]
+            ]
         )
     return None
 
@@ -146,7 +218,10 @@ async def safe_send_reply(
             else:
                 await target.reply_text(text, reply_markup=reply_markup)
         except Exception as exc:
-            retry = _is_pre_delivery_connect_error(exc) and attempt < _CONNECT_RETRY_ATTEMPTS
+            retry = (
+                _is_pre_delivery_connect_error(exc)
+                and attempt < _CONNECT_RETRY_ATTEMPTS
+            )
             logger.warning(
                 "Telegram response delivery failed",
                 extra={
@@ -172,6 +247,61 @@ async def safe_send_reply(
         )
         return True
     return False
+
+
+def _telegram_identity(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> tuple[AgentService, str] | None:
+    service = context.application.bot_data.get("agent_service")
+    secret = context.application.bot_data.get("thread_id_hmac_secret")
+    key_id = context.application.bot_data.get("thread_id_hmac_key_id", "v1")
+    if (
+        not isinstance(service, AgentService)
+        or not isinstance(secret, str)
+        or not secret
+    ):
+        return None
+    conversation_id = conversation_id_for_update(update, secret, str(key_id))
+    if conversation_id is None:
+        return None
+    return service, conversation_id
+
+
+async def _serialized_agent_delivery(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    target: Any,
+    message: str,
+    *,
+    operation: str,
+    callback_action: str | None = None,
+    callback_revision: int | None = None,
+    callback_confirmation_id: str | None = None,
+) -> AgentResponse:
+    identity = _telegram_identity(update, context)
+    if identity is None:
+        result = AgentResponse(FALLBACK_MESSAGE, None, None, "agent_unavailable")
+        await safe_send_reply(target, result.text, operation=operation)
+        return result
+    service, conversation_id = identity
+
+    async def deliver(result: AgentResponse) -> object:
+        return await safe_send_reply(
+            target,
+            result.text,
+            reply_markup=_response_markup(result),
+            operation=operation,
+        )
+
+    return await service.handle_message_result_and_deliver(
+        message,
+        conversation_id,
+        getattr(update, "update_id", None),
+        deliver,
+        callback_action=callback_action,
+        callback_revision=callback_revision,
+        callback_confirmation_id=callback_confirmation_id,
+    )
 
 
 def conversation_id_for_update(
@@ -212,7 +342,9 @@ async def agent_response(
             raise RuntimeError("Telegram thread identity is not configured")
         return await agent_service.handle_message_result(
             message,
-            conversation_id=conversation_id_for_update(update, hmac_secret, str(key_id)),
+            conversation_id=conversation_id_for_update(
+                update, hmac_secret, str(key_id)
+            ),
             update_id=getattr(update, "update_id", None),
             callback_action=callback_action,
             callback_revision=callback_revision,
@@ -232,16 +364,100 @@ async def agent_answer(
     return (await agent_response(update, context, message)).text
 
 
-async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def text_message_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
     if update.message is None or update.message.text is None:
         return
-    result = await agent_response(update, context, update.message.text)
-    await safe_send_reply(
-        update.message,
-        result.text,
-        reply_markup=_response_markup(result),
-        operation="text_response",
+    await _serialized_agent_delivery(
+        update, context, update.message, update.message.text, operation="text_response"
     )
+
+
+async def menu_message_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    if update.message is None:
+        return
+    identity = _telegram_identity(update, context)
+    menu_factory = context.application.bot_data.get("catalog_menu_factory")
+    bot = getattr(context, "bot", None) or getattr(context.application, "bot", None)
+    chat_id = getattr(getattr(update, "effective_chat", None), "id", None)
+    if (
+        identity is None
+        or not callable(menu_factory)
+        or bot is None
+        or not isinstance(chat_id, int)
+    ):
+        return
+    service, conversation_id = identity
+    try:
+        await run_catalog_update(
+            service=service,
+            menu_factory=menu_factory,
+            bot=bot,
+            chat_id=chat_id,
+            conversation_id=conversation_id,
+            update_id=getattr(update, "update_id", None),
+            recovery=True,
+        )
+    except Exception as exc:
+        logger.error(
+            "Catalog update failed",
+            extra={"exception_type": type(exc).__name__, "operation": "catalog_menu"},
+        )
+
+
+async def catalog_callback_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    query = update.callback_query
+    if query is None:
+        return
+    valid = decode_callback(getattr(query, "data", None)) is not None
+    try:
+        await query.answer(None if valid else "Кнопка устарела. Откройте «Меню» снова.")
+    except Exception as exc:
+        logger.warning(
+            "Telegram callback acknowledgement failed",
+            extra={
+                "exception_type": type(exc).__name__,
+                "operation": "catalog_callback_ack",
+            },
+        )
+    if not valid or query.message is None:
+        return
+    identity = _telegram_identity(update, context)
+    menu_factory = context.application.bot_data.get("catalog_menu_factory")
+    bot = getattr(context, "bot", None) or getattr(context.application, "bot", None)
+    chat_id = getattr(getattr(update, "effective_chat", None), "id", None)
+    if (
+        identity is None
+        or not callable(menu_factory)
+        or bot is None
+        or not isinstance(chat_id, int)
+    ):
+        return
+    service, conversation_id = identity
+    try:
+        await run_catalog_update(
+            service=service,
+            menu_factory=menu_factory,
+            bot=bot,
+            chat_id=chat_id,
+            conversation_id=conversation_id,
+            update_id=getattr(update, "update_id", None),
+            payload=query.data,
+            callback_message_id=getattr(query.message, "message_id", None),
+        )
+    except Exception as exc:
+        logger.error(
+            "Catalog callback failed",
+            extra={
+                "exception_type": type(exc).__name__,
+                "operation": "catalog_callback",
+            },
+        )
 
 
 async def order_callback_handler(
@@ -291,19 +507,15 @@ async def order_callback_handler(
         "clarify_checkout": "Перейти к оформлению",
         "cancel_checkout": "Отменить оформление",
     }.get(action, "")
-    result = await agent_response(
+    await _serialized_agent_delivery(
         update,
         context,
+        query.message,
         message,
+        operation="callback_response",
         callback_action=action,
         callback_revision=revision,
         callback_confirmation_id=confirmation_id,
-    )
-    await safe_send_reply(
-        query.message,
-        result.text,
-        reply_markup=_response_markup(result),
-        operation="callback_response",
     )
 
 
@@ -319,7 +531,9 @@ async def telegram_error_handler(
     logger.error(
         "Unhandled Telegram application error",
         extra={
-            "exception_type": type(error).__name__ if error is not None else "UnknownError",
+            "exception_type": type(error).__name__
+            if error is not None
+            else "UnknownError",
             "operation": "application_update",
             "attempt": 1,
             "outcome": "failed",

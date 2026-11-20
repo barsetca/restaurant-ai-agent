@@ -47,7 +47,7 @@ def test_bootstrap_reuses_single_application_and_registers_agent_handler() -> No
         thread_id_hmac_secret=_HMAC_SECRET,
     )
     assert application.bot_data["agent_service"] is service
-    assert len(application.handlers[0]) == 3
+    assert len(application.handlers[0]) == 5
     assert len(application.error_handlers) == 1
 
 
@@ -87,7 +87,11 @@ async def test_start_command_behavior_is_unchanged() -> None:
 
     await start_command(update, SimpleNamespace())
 
-    message.reply_text.assert_awaited_once_with("Restaurant AI Agent is running.")
+    assert message.reply_text.await_args.args == ("Restaurant AI Agent is running.",)
+    assert (
+        message.reply_text.await_args.kwargs["reply_markup"].keyboard[0][0].text
+        == "Меню"
+    )
 
 
 async def test_start_command_uses_agent_state_when_service_is_available() -> None:
@@ -106,7 +110,11 @@ async def test_start_command_uses_agent_state_when_service_is_available() -> Non
         )
     )
     await start_command(update, context)
-    message.reply_text.assert_awaited_once_with("Подтвержденный заказ сохранен.")
+    assert message.reply_text.await_args.args == ("Подтвержденный заказ сохранен.",)
+    assert (
+        message.reply_text.await_args.kwargs["reply_markup"].keyboard[0][0].text
+        == "Меню"
+    )
     assert graph.ainvoke.await_args.args[0]["user_message"] == "/start"
 
 

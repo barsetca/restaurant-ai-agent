@@ -9,6 +9,7 @@ from app.catalog_ui.models import (
     CatalogActionKind,
     CatalogScreen,
     CatalogUiState,
+    NavigationContext,
     PendingRender,
     RenderedButton,
     RenderedScreen,
@@ -311,6 +312,14 @@ def prepare_render(
         rendered=prepared,
         actions=actions,
         draft_revision=draft_revision,
+        navigation=NavigationContext(
+            screen=rendered.screen,
+            category_id=state.category_id,
+            offset=state.offset,
+            dish_id=state.selected_dish_id,
+            categories_offset=state.categories_offset,
+        ),
+        cart_return=state.cart_return,
     )
     return state.model_copy(update={"pending_render": pending, "ui_revision": revision})
 
@@ -324,6 +333,16 @@ def acknowledge_render(
     pending = state.pending_render
     if pending is None or pending.token != token:
         raise ValueError("render acknowledgement does not match pending token")
+    navigation = pending.navigation or NavigationContext(
+        screen=pending.screen,
+        category_id=state.category_id,
+        offset=state.offset,
+        dish_id=state.selected_dish_id,
+        categories_offset=state.categories_offset,
+    )
+    retired = list(state.retired_tokens)
+    if state.active_token and state.active_token != pending.token:
+        retired.append(state.active_token)
     return state.model_copy(
         update={
             "active_screen": pending.screen,
@@ -332,6 +351,14 @@ def acknowledge_render(
             "active_revision": pending.revision,
             "active_actions": pending.actions,
             "active_message_id": message_id,
+            "active_navigation": navigation,
+            "active_cart_return": pending.cart_return,
+            "category_id": navigation.category_id,
+            "offset": navigation.offset,
+            "selected_dish_id": navigation.dish_id,
+            "categories_offset": navigation.categories_offset,
+            "retired_tokens": retired[-32:],
+            "cart_return": pending.cart_return,
             "pending_render": None,
         }
     )

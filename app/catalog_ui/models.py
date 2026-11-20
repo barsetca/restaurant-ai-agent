@@ -42,6 +42,7 @@ class NavigationContext(UiModel):
     category_id: str | None = Field(default=None, max_length=120)
     offset: int = Field(default=0, ge=0)
     dish_id: str | None = Field(default=None, max_length=36)
+    categories_offset: int = Field(default=0, ge=0)
 
 
 class RenderedButton(UiModel):
@@ -66,6 +67,8 @@ class PendingRender(UiModel):
     actions: list[CatalogAction] = Field(default_factory=list, max_length=80)
     draft_revision: int | None = Field(default=None, ge=0)
     message_id: int | None = None
+    navigation: NavigationContext | None = None
+    cart_return: NavigationContext | None = None
 
 
 class CatalogUiState(UiModel):
@@ -77,6 +80,8 @@ class CatalogUiState(UiModel):
     active_revision: int = Field(default=0, ge=0)
     active_actions: list[CatalogAction] = Field(default_factory=list, max_length=80)
     active_message_id: int | None = None
+    active_navigation: NavigationContext | None = None
+    active_cart_return: NavigationContext | None = None
     pending_render: PendingRender | None = None
     categories_offset: int = Field(default=0, ge=0)
     category_id: str | None = Field(default=None, max_length=120)
@@ -84,6 +89,7 @@ class CatalogUiState(UiModel):
     selected_dish_id: str | None = Field(default=None, max_length=36)
     cart_return: NavigationContext | None = None
     ui_revision: int = Field(default=0, ge=0)
+    retired_tokens: list[str] = Field(default_factory=list, max_length=32)
 
     @field_validator("category_id")
     @classmethod

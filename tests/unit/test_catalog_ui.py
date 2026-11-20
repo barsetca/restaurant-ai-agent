@@ -163,6 +163,17 @@ def test_render_home_and_empty_categories() -> None:
     assert "нет" in rendered.text
 
 
+def test_home_cart_and_home_round_trip_preserves_business_state() -> None:
+    business = {"cart": [{"dish_id": str(DISH_ID), "quantity": 2}], "draft_revision": 4}
+    before = deepcopy(business)
+    home = CatalogUiState()
+    cart = activate(navigate(home, action(CatalogActionKind.OPEN_CART)))
+    assert cart.requested_screen is CatalogScreen.CART
+    returned = activate(navigate(cart, action(CatalogActionKind.CONTINUE_CATALOG)))
+    assert returned.requested_screen is CatalogScreen.HOME
+    assert business == before
+
+
 def test_render_categories_is_deterministic() -> None:
     state = activate(
         navigate(CatalogUiState(), action(CatalogActionKind.OPEN_CATEGORIES))
@@ -518,3 +529,49 @@ def test_mutation_blocked_during_pending_but_navigation_allowed(
     )
     assert resolve_callback(updated, new_payload, draft_revision=12) is None
     assert order == before
+
+
+def test_active_callback_uses_active_context_while_pending_context_differs() -> None:
+    active = CatalogUiState(
+        active_screen=CatalogScreen.CATEGORIES,
+        requested_screen=CatalogScreen.CATEGORIES,
+        categories_offset=0,
+    )
+    active = acknowledge_render(
+        prepare_render(
+            active,
+            render_screen(
+                active,
+                RenderData(
+                    categories=CategoryList(
+                        categories=[
+                            CategorySummary(
+                                id="active",
+                                name="Active",
+                                available_dish_count=1,
+                            )
+                        ]
+                    )
+                ),
+            ),
+            token="token010",
+        ),
+        token="token010",
+        message_id=10,
+    )
+    pending_state = active.model_copy(
+        update={"categories_offset": 20, "requested_screen": CatalogScreen.CATEGORIES}
+    )
+    pending_state = prepare_render(
+        pending_state,
+        render_screen(
+            pending_state, RenderData(categories=CategoryList(categories=[]))
+        ),
+        token="token011",
+    )
+    payload = "cat:1:token010:0"
+    action_from_active = resolve_callback(pending_state, payload)
+    assert action_from_active is not None
+    navigated = navigate(pending_state, action_from_active)
+    assert navigated.requested_screen is CatalogScreen.DISH_LIST
+    assert navigated.categories_offset == 0

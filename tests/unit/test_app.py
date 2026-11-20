@@ -109,7 +109,11 @@ async def test_telegram_without_faq_builds_safe_agent_once(monkeypatch) -> None:
         agent_service,
         thread_id_hmac_secret="synthetic-hmac-secret-at-least-32-characters",
         thread_id_hmac_key_id="v1",
+        catalog_menu_factory=build_telegram_application.call_args.kwargs[
+            "catalog_menu_factory"
+        ],
     )
+    assert callable(build_telegram_application.call_args.kwargs["catalog_menu_factory"])
     start_polling.assert_awaited_once_with(telegram_application)
     stop_polling.assert_awaited_once_with(telegram_application)
     checkpoint_ready.assert_awaited_once_with(checkpointer)

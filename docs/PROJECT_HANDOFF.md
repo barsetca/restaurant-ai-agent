@@ -1,10 +1,10 @@
 # Project Handoff — контекст для нового чата
 
-**Последний принятый инкремент: M5.2-A3.2 — ACCEPTED владельцем 2026-11-20**, по отчетам [051](../history/051_M5_2_A3_2_ui_state_rendering_report.md), [052](../history/052_M5_2_A3_2_verification_closure_report.md), [053](../history/053_M5_2_A3_2_corrective_closure_report.md); closure — [054](../history/054_M5_2_A3_2_owner_acceptance_report.md). Это не Telegram LIVE acceptance. A3.1 также ACCEPTED.
+**Текущий инкремент: M5.2-A3.3 — IMPLEMENTED / READY FOR OWNER REVIEW, не ACCEPTED.** Последний принятый инкремент — A3.2 (owner, 2026-11-20). A3.3 добавляет кнопку «Меню», runtime пяти catalog screens, единый lock для start/text/order/catalog, checkpoint-before-delivery, replay, fail-closed recovery и separate active/pending contexts. LIVE-001 исправлен: inline callbacks остаются edit-first, но explicit Reply Keyboard «Меню» всегда делает один user-initiated `sendMessage` HOME, не редактируя persisted `active_message_id`; Telegram Bot API не даёт надёжного сигнала о локальном удалении истории. Это исключает невидимый successful edit после history deletion, не является auto resend и инвалидирует старые tokens. Verification closure 059 закрыл два owner-review gaps. Full unit 313 PASS; Telegram LIVE не повторялся. Отчёты/snapshots 057, 059 и 060.
 
-Принятые контракты: UI state — optional JSON-safe поле existing LangGraph PostgreSQL checkpoint; renderer возвращает независимый `RenderedScreen DTO`; callback `cat:1` использует short token и bounded server-side registry только active/pending screens. Pending callbacks до acknowledgement не разрешаются; cart mutation callbacks при наличии pending отклоняются. Навигация независима от `draft_revision`. Категории — страницы по 10, блюда — по 5. По отчету 053: 301 unit PASS, isolated PostgreSQL checkpoint 1 PASS; scoped quality checks PASS. Реальная Telegram доставка, per-thread delivery serialization и recovery еще не реализованы.
+Актуальные контракты: UI state — optional JSON-safe поле existing LangGraph PostgreSQL checkpoint; callback `cat:1` использует short token и bounded registry. Pending callbacks не разрешаются; active/pending navigation разделены. Catalog prepare + replay metadata фиксируются graph terminal update до delivery; ack записывается только после Telegram success. Unknown outcomes не подтверждаются и не повторяются автоматически. Категории — 10, блюда — 5 с `has_more` и одним bounded shrink recovery read. Catalog `+/-` и checkout не исполняются до A3.4.
 
-**Следующий инкремент для обсуждения: M5.2-A3.3 — Telegram Delivery, Acknowledgement & Serialization**, **NOT STARTED**. Его архитектуру и scope необходимо отдельно согласовать с владельцем. Ниже сохранены исторические записи; они описывают состояние на момент соответствующих отчетов.
+**Следующий шаг:** owner review A3.3; не начинать A3.4 без отдельного задания. Ниже сохранены исторические записи; они описывают состояние на момент соответствующих отчетов.
 
 **A3.2 corrective closure:** category pagination по 10 с независимым checkpoint offset и pending mutation guard реализованы; full unit 301 PASS, isolated PostgreSQL checkpoint 1 PASS. Telegram adapter отсутствует. Owner acceptance ожидается; A3.3 требует отдельного задания. См. отчет 053 и ADR-026.
 
@@ -24,7 +24,7 @@
 
 ## Что это
 
-Учебный Restaurant AI Agent. M1–M4 приняты. M5 остается IN PROGRESS: M5.2-A2.3 прошел owner LIVE acceptance, M5.2-A3.1 и A3.2 приняты владельцем без отдельного подтверждения LIVE acceptance A3.1/A3.2. A3.3 и M6 не начинались. Исходные DOCX остаются в ChatGPT Sources.
+Учебный Restaurant AI Agent. M1–M4 приняты. M5 остается IN PROGRESS: M5.2-A2.3 прошел owner LIVE acceptance, M5.2-A3.1 и A3.2 приняты владельцем; A3.3 реализован и ожидает owner review без Telegram LIVE. A3.4 и M6 не начинались. Исходные DOCX остаются в ChatGPT Sources.
 
 ## Прежде чем продолжать
 

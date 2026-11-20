@@ -23,11 +23,12 @@ def normalize_offset(
 
 
 def _context(state: CatalogUiState) -> NavigationContext:
-    return NavigationContext(
+    return state.active_navigation or NavigationContext(
         screen=state.active_screen,
         category_id=state.category_id,
         offset=state.offset,
         dish_id=state.selected_dish_id,
+        categories_offset=state.categories_offset,
     )
 
 
@@ -38,9 +39,17 @@ def navigate(
     total_items: int | None = None,
 ) -> CatalogUiState:
     """Return navigation state only; order/cart fields do not exist in this domain."""
-    screen = state.active_screen
+    active = _context(state)
+    screen = active.screen
     kind = action.kind
-    changes: dict[str, object] = {"pending_render": None}
+    changes: dict[str, object] = {
+        "pending_render": None,
+        "category_id": active.category_id,
+        "offset": active.offset,
+        "selected_dish_id": active.dish_id,
+        "categories_offset": active.categories_offset,
+        "cart_return": state.active_cart_return or state.cart_return,
+    }
     if screen is CatalogScreen.HOME and kind is CatalogActionKind.OPEN_CATEGORIES:
         changes.update(
             requested_screen=CatalogScreen.CATEGORIES, category_id=None, offset=0
@@ -76,17 +85,23 @@ def navigate(
     elif screen is CatalogScreen.CATEGORIES and kind is CatalogActionKind.BACK:
         changes.update(requested_screen=CatalogScreen.HOME)
     elif (
-        screen in {CatalogScreen.DISH_LIST, CatalogScreen.DISH_DETAIL}
+        screen
+        in {CatalogScreen.HOME, CatalogScreen.DISH_LIST, CatalogScreen.DISH_DETAIL}
         and kind is CatalogActionKind.OPEN_CART
     ):
         changes.update(requested_screen=CatalogScreen.CART, cart_return=_context(state))
     elif screen is CatalogScreen.CART and kind is CatalogActionKind.CONTINUE_CATALOG:
-        target = state.cart_return or NavigationContext(screen=CatalogScreen.HOME)
+        target = (
+            state.active_cart_return
+            or state.cart_return
+            or NavigationContext(screen=CatalogScreen.HOME)
+        )
         changes.update(
             requested_screen=target.screen,
             category_id=target.category_id,
             offset=target.offset,
             selected_dish_id=target.dish_id,
+            categories_offset=target.categories_offset,
             cart_return=None,
         )
     elif screen is CatalogScreen.CATEGORIES and kind in {
@@ -94,7 +109,7 @@ def navigate(
         CatalogActionKind.PREVIOUS_PAGE,
     }:
         proposed = (
-            action.offset if action.offset is not None else state.categories_offset
+            action.offset if action.offset is not None else active.categories_offset
         )
         changes["categories_offset"] = normalize_offset(
             proposed, total_items or 0, CATEGORIES_PAGE_SIZE
@@ -103,8 +118,12 @@ def navigate(
         CatalogActionKind.NEXT_PAGE,
         CatalogActionKind.PREVIOUS_PAGE,
     }:
-        proposed = action.offset if action.offset is not None else state.offset
-        changes["offset"] = normalize_offset(proposed, total_items or 0)
+        proposed = action.offset if action.offset is not None else active.offset
+        changes["offset"] = (
+            max(0, proposed)
+            if total_items is None
+            else normalize_offset(proposed, total_items)
+        )
     else:
         raise ValueError(f"invalid catalog transition: {screen}/{kind}")
     return state.model_copy(update=changes)
